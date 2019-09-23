@@ -38,7 +38,7 @@ SSL-terminating web proxies with company certificate becomes difficult.
 ------
 ### A Solution;
 
-**PFUI** changes the traditional filtering method by instead always _blocking_ all egress traffic by default 
+**PFUI Firewall** changes the traditional filtering method by instead always _blocking_ all egress traffic by default 
 (thus stopping DoH, Proxy bypasses with BYOD, Botnets, Malware, script-kiddies and hampering Hackers etc).
 
 To permit the legitimate traffic, PFUI simply glue's the DNS layer to the Firewall, by installing every 
