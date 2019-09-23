@@ -1,0 +1,16 @@
+--- # Yaml
+
+# PFUI Client (Unbound DNS Server (Any OS))
+
+DEBUG: True         # Enable verbose logging - Requires daemon mode (unbound -dv)
+
+SOCKET_TIMEOUT: 1    # Timeout on Socket session between client and server
+
+DEFAULT_PORT: 10001  # Default port where PFUI Server is running
+FIREWALLS:           # List of dictionary's specifying target OpenBSD PF Firewalls
+  - HOST: 127.0.0.1  # IP of first PF Firewall
+    PORT: 10001      # Port for first PFUI server running on PF Firewall
+#  - HOST:            # IP of second PF Firewall
+#    PORT:            # Port for second PFUI server running on PF Firewall
+
+# When operating PF Clusters using CARP, both members must be updated as PF Tables are not synced with PF-Sync # TODO Verify this ??
