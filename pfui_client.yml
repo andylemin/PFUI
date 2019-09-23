@@ -13,4 +13,5 @@ FIREWALLS:           # List of dictionary's specifying target OpenBSD PF Firewal
 #  - HOST:            # IP of second PF Firewall
 #    PORT:            # Port for second PFUI server running on PF Firewall
 
-# When operating PF Clusters using CARP, both members must be updated as PF Tables are not synced with PF-Sync # TODO Verify this ??
+# When operating PF Firewall Clusters using CARP, both firewall members should be updated as PF Table data is
+# not synced by PF-Sync  # TODO Verify this ??
