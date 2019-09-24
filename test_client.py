@@ -24,6 +24,7 @@ def transmit(ip_dict):
     """ Test Transmit to PF Firewall running pfui_server listener. """
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Buffer size Zero
     s.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, cfg['SOCKET_TIMEOUT'])
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
