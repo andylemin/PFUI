@@ -1,0 +1,778 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Inplace callbacks &#8212; Unbound scriptable interface 1.0.0 documentation</title>
+    <link rel="stylesheet" href="../_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '1.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  false,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Use cases (examples)" href="../usecase.html" />
+    <link rel="prev" title="EDNS options" href="example5.html" /> 
+  </head>
+  <body>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../usecase.html" title="Use cases (examples)"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="example5.html" title="EDNS options"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Examples</a> &#187;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="inplace-callbacks">
+<h1>Inplace callbacks<a class="headerlink" href="#inplace-callbacks" title="Permalink to this headline">¶</a></h1>
+<p>This example shows how to register and use inplace callback functions. These
+functions are going to be called just before unbound replies back to a client.
+They can perform certain actions without interrupting unbound’s execution flow
+(e.g. add/remove EDNS options, manipulate the reply).</p>
+<p>Two different scenarios will be shown:</p>
+<ul class="simple">
+<li>If answering from cache and the client used EDNS option code <code class="docutils literal"><span class="pre">65002</span></code> we
+will answer with the same code but with data <code class="docutils literal"><span class="pre">0xdeadbeef</span></code>;</li>
+<li>When answering with a SERVFAIL we also add an empty EDNS option code
+<code class="docutils literal"><span class="pre">65003</span></code>.</li>
+</ul>
+<div class="section" id="key-parts">
+<h2>Key parts<a class="headerlink" href="#key-parts" title="Permalink to this headline">¶</a></h2>
+<p>This example relies on the following functionalities:</p>
+<div class="section" id="registering-inplace-callback-functions">
+<h3>Registering inplace callback functions<a class="headerlink" href="#registering-inplace-callback-functions" title="Permalink to this headline">¶</a></h3>
+<p>There are four types of inplace callback functions:</p>
+<ul class="simple">
+<li><a class="reference internal" href="#inplace-callback-reply-functions">inplace callback reply functions</a></li>
+<li><a class="reference internal" href="#inplace-callback-reply-cache-functions">inplace callback reply_cache functions</a></li>
+<li><a class="reference internal" href="#inplace-callback-reply-local-functions">inplace callback reply_local functions</a></li>
+<li><a class="reference internal" href="#inplace-callback-reply-servfail-functions">inplace callback reply_servfail functions</a></li>
+</ul>
+<div class="section" id="inplace-callback-reply-functions">
+<h4>Inplace callback reply functions<a class="headerlink" href="#inplace-callback-reply-functions" title="Permalink to this headline">¶</a></h4>
+<p>Called when answering with a <em>resolved</em> query.</p>
+<p>The callback function’s prototype is the following:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">inplace_reply_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                           <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering with a resolved query.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. It contains the available opt_lists; It</span>
+<span class="sd">                   SHOULD NOT be altered;</span>
+<span class="sd">    :param rep: reply_info struct;</span>
+<span class="sd">    :param rcode: return code for the query;</span>
+<span class="sd">    :param edns: edns_data to be sent to the client side. It SHOULD NOT be</span>
+<span class="sd">                 altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh states.</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The function’s name is irrelevant.</p>
+</div>
+<p>We can register such function as:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply</span><span class="p">(</span><span class="n">inplace_reply_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: Could not register inplace callback function.&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="inplace-callback-reply-cache-functions">
+<h4>Inplace callback reply_cache functions<a class="headerlink" href="#inplace-callback-reply-cache-functions" title="Permalink to this headline">¶</a></h4>
+<p>Called when answering <em>from cache</em>.</p>
+<p>The callback function’s prototype is the following:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">inplace_cache_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                           <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering from the cache.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. None;</span>
+<span class="sd">    :param rep: reply_info struct;</span>
+<span class="sd">    :param rcode: return code for the query;</span>
+<span class="sd">    :param edns: edns_data sent from the client side. The list with the EDNS</span>
+<span class="sd">                 options is accessible through edns.opt_list. It SHOULD NOT be</span>
+<span class="sd">                 altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    For demonstration purposes we want to see if EDNS option 65002 is present</span>
+<span class="sd">    and reply with a new value.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The function’s name is irrelevant.</p>
+</div>
+<p>We can register such function as:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply_cache</span><span class="p">(</span><span class="n">inplace_cache_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: Could not register inplace callback function.&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="inplace-callback-reply-local-functions">
+<h4>Inplace callback reply_local functions<a class="headerlink" href="#inplace-callback-reply-local-functions" title="Permalink to this headline">¶</a></h4>
+<p>Called when answering with <em>local data</em> or a <em>Chaos(CH) reply</em>.</p>
+<p>The callback function’s prototype is the following:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">inplace_local_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                           <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering from local data.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. None;</span>
+<span class="sd">    :param rep: reply_info struct;</span>
+<span class="sd">    :param rcode: return code for the query;</span>
+<span class="sd">    :param edns: edns_data sent from the client side. The list with the</span>
+<span class="sd">                 EDNS options is accessible through edns.opt_list. It</span>
+<span class="sd">                 SHOULD NOT be altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The function’s name is irrelevant.</p>
+</div>
+<p>We can register such function as:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply_local</span><span class="p">(</span><span class="n">inplace_local_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: Could not register inplace callback function.&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="inplace-callback-reply-servfail-functions">
+<h4>Inplace callback reply_servfail functions<a class="headerlink" href="#inplace-callback-reply-servfail-functions" title="Permalink to this headline">¶</a></h4>
+<p>Called when answering with <em>SERVFAIL</em>.</p>
+<p>The callback function’s prototype is the following:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">inplace_servfail_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                              <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering with SERVFAIL.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. If not None the relevant opt_lists are</span>
+<span class="sd">                   available here;</span>
+<span class="sd">    :param rep: reply_info struct. None;</span>
+<span class="sd">    :param rcode: return code for the query. LDNS_RCODE_SERVFAIL;</span>
+<span class="sd">    :param edns: edns_data to be sent to the client side. If qstate is None</span>
+<span class="sd">                 edns.opt_list contains the EDNS options sent from the client</span>
+<span class="sd">                 side. It SHOULD NOT be altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    For demonstration purposes we want to reply with an empty EDNS code &#39;65003&#39;</span>
+<span class="sd">    and log the IP address(es) of the client(s).</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The function’s name is irrelevant.</p>
+</div>
+<p>We can register such function as:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply_servfail</span><span class="p">(</span><span class="n">inplace_servfail_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: Could not register inplace callback function.&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="section" id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Permalink to this headline">¶</a></h2>
+<p>Run the Unbound server:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span>root@localhost$ unbound -dv -c ./test-inplace_callbacks.conf
+</pre></div>
+</div>
+<p>In case you use your own configuration file, don’t forget to enable the Python
+module:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="n">module</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="s2">&quot;validator python iterator&quot;</span>
+</pre></div>
+</div>
+<p>and use a valid script path</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="n">python</span><span class="o">-</span><span class="n">script</span><span class="p">:</span> <span class="s2">&quot;./examples/inplace_callbacks.py&quot;</span>
+</pre></div>
+</div>
+<p>On the first query for the nlnetlabs.nl A record we get no EDNS option back:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span>root@localhost$ dig @localhost nlnetlabs.nl +ednsopt=65002
+
+; &lt;&lt;&gt;&gt; DiG 9.10.3-P4-Ubuntu &lt;&lt;&gt;&gt; @localhost nlnetlabs.nl +ednsopt=65002
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 48057
+;; flags: qr rd ra ad; QUERY: 1, ANSWER: 1, AUTHORITY: 4, ADDITIONAL: 3
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;nlnetlabs.nl.                  IN      A
+
+;; ANSWER SECTION:
+nlnetlabs.nl.           10200   IN      A       185.49.140.10
+
+;; AUTHORITY SECTION:
+nlnetlabs.nl.           10200   IN      NS      ns.nlnetlabs.nl.
+nlnetlabs.nl.           10200   IN      NS      sec2.authdns.ripe.net.
+nlnetlabs.nl.           10200   IN      NS      anyns.pch.net.
+nlnetlabs.nl.           10200   IN      NS      ns-ext1.sidn.nl.
+
+;; ADDITIONAL SECTION:
+ns.nlnetlabs.nl.        10200   IN      A       185.49.140.60
+ns.nlnetlabs.nl.        10200   IN      AAAA    2a04:b900::8:0:0:60
+
+;; Query time: 813 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1)
+;; WHEN: Mon Dec 05 16:15:32 CET 2016
+;; MSG SIZE  rcvd: 204
+</pre></div>
+</div>
+<p>When we issue the same query again we get a cached response and the expected
+<code class="docutils literal"><span class="pre">65002:</span> <span class="pre">0xdeadbeef</span></code> EDNS option:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span>root@localhost$ dig @localhost nlnetlabs.nl +ednsopt=65002
+
+; &lt;&lt;&gt;&gt; DiG 9.10.3-P4-Ubuntu &lt;&lt;&gt;&gt; @localhost nlnetlabs.nl +ednsopt=65002
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 26489
+;; flags: qr rd ra ad; QUERY: 1, ANSWER: 1, AUTHORITY: 4, ADDITIONAL: 3
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+; OPT=65002: de ad be ef (&quot;....&quot;)
+;; QUESTION SECTION:
+;nlnetlabs.nl.                  IN      A
+
+;; ANSWER SECTION:
+nlnetlabs.nl.           10197   IN      A       185.49.140.10
+
+;; AUTHORITY SECTION:
+nlnetlabs.nl.           10197   IN      NS      ns.nlnetlabs.nl.
+nlnetlabs.nl.           10197   IN      NS      sec2.authdns.ripe.net.
+nlnetlabs.nl.           10197   IN      NS      anyns.pch.net.
+nlnetlabs.nl.           10197   IN      NS      ns-ext1.sidn.nl.
+
+;; ADDITIONAL SECTION:
+ns.nlnetlabs.nl.        10197   IN      AAAA    2a04:b900::8:0:0:60
+ns.nlnetlabs.nl.        10197   IN      A       185.49.140.60
+
+;; Query time: 0 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1)
+;; WHEN: Mon Dec 05 16:50:04 CET 2016
+;; MSG SIZE  rcvd: 212
+</pre></div>
+</div>
+<p>By issuing a query for a bogus domain unbound replies with SERVFAIL and an
+empty EDNS option code <code class="docutils literal"><span class="pre">65003</span></code>. <em>For this example to work unbound needs to be
+validating</em>:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span>root@localhost$ dig @localhost bogus.nlnetlabs.nl txt
+
+; &lt;&lt;&gt;&gt; DiG 9.10.3-P4-Ubuntu &lt;&lt;&gt;&gt; @localhost bogus.nlnetlabs.nl txt
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: SERVFAIL, id: 19865
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+; OPT=65003
+;; QUESTION SECTION:
+;bogus.nlnetlabs.nl.            IN      TXT
+
+;; Query time: 11 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1)
+;; WHEN: Mon Dec 05 17:06:01 CET 2016
+;; MSG SIZE  rcvd: 51
+</pre></div>
+</div>
+</div>
+<div class="section" id="complete-source-code">
+<h2>Complete source code<a class="headerlink" href="#complete-source-code" title="Permalink to this headline">¶</a></h2>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+<span class="sd">&#39;&#39;&#39;</span>
+<span class="sd"> inplace_callbacks.py: python module showcasing inplace callback function</span>
+<span class="sd">                       registration and functionality.</span>
+
+<span class="sd"> Copyright (c) 2016, NLnet Labs.</span>
+
+<span class="sd"> This software is open source.</span>
+
+<span class="sd"> Redistribution and use in source and binary forms, with or without</span>
+<span class="sd"> modification, are permitted provided that the following conditions</span>
+<span class="sd"> are met:</span>
+
+<span class="sd">    * Redistributions of source code must retain the above copyright notice,</span>
+<span class="sd">      this list of conditions and the following disclaimer.</span>
+
+<span class="sd">    * Redistributions in binary form must reproduce the above copyright notice,</span>
+<span class="sd">      this list of conditions and the following disclaimer in the documentation</span>
+<span class="sd">      and/or other materials provided with the distribution.</span>
+
+<span class="sd">    * Neither the name of the organization nor the names of its</span>
+<span class="sd">      contributors may be used to endorse or promote products derived from this</span>
+<span class="sd">      software without specific prior written permission.</span>
+
+<span class="sd"> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS</span>
+<span class="sd"> &quot;AS IS&quot; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED</span>
+<span class="sd"> TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR</span>
+<span class="sd"> PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE</span>
+<span class="sd"> LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="sd"> CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="sd"> SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="sd"> INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="sd"> CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="sd"> ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="sd"> POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="sd">&#39;&#39;&#39;</span>
+<span class="c1">#Try:</span>
+<span class="c1"># - dig @localhost nlnetlabs.nl +ednsopt=65002:</span>
+<span class="c1">#       This query *could* be answered from cache. If so, unbound will reply</span>
+<span class="c1">#       with the same EDNS option 65002, but with hexdata &#39;deadbeef&#39; as data.</span>
+<span class="c1">#</span>
+<span class="c1"># - dig @localhost bogus.nlnetlabs.nl txt:</span>
+<span class="c1">#       This query returns SERVFAIL as the txt record of bogus.nlnetlabs.nl is</span>
+<span class="c1">#       intentionally bogus. The reply will contain an empty EDNS option</span>
+<span class="c1">#       with option code 65003.</span>
+<span class="c1">#       Unbound will also log the source address(es) of the client(s) that made</span>
+<span class="c1">#       the request.</span>
+<span class="c1">#       (unbound needs to be validating for this example to work)</span>
+
+<span class="c1"># Useful functions:</span>
+<span class="c1">#   register_inplace_cb_reply(inplace_reply_callback, env, id):</span>
+<span class="c1">#       Register the reply_callback function as an inplace callback function</span>
+<span class="c1">#       when answering with a resolved query.</span>
+<span class="c1">#       Return True on success, False on failure.</span>
+<span class="c1">#</span>
+<span class="c1">#   register_inplace_cb_reply_cache(inplace_reply_cache_callback, env, id):</span>
+<span class="c1">#       Register the reply_cache_callback function as an inplace callback</span>
+<span class="c1">#       function when answering from cache.</span>
+<span class="c1">#       Return True on success, False on failure.</span>
+<span class="c1">#</span>
+<span class="c1">#   register_inplace_cb_reply_local(inplace_reply_local_callback, env, id):</span>
+<span class="c1">#       Register the reply_local_callback function as an inplace callback</span>
+<span class="c1">#       function when answering from local data or chaos reply.</span>
+<span class="c1">#       Return True on success, False on failure.</span>
+<span class="c1">#</span>
+<span class="c1">#   register_inplace_cb_reply_servfail(inplace_reply_servfail_callback, env, id):</span>
+<span class="c1">#       Register the reply_servfail_callback function as an inplace callback</span>
+<span class="c1">#       function when answering with servfail.</span>
+<span class="c1">#       Return True on success, False on failure.</span>
+<span class="c1">#</span>
+<span class="c1"># Examples on how to use the functions are given in this file.</span>
+
+
+<span class="k">def</span> <span class="nf">inplace_reply_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                           <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering with a resolved query.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. It contains the available opt_lists; It</span>
+<span class="sd">                   SHOULD NOT be altered;</span>
+<span class="sd">    :param rep: reply_info struct;</span>
+<span class="sd">    :param rcode: return code for the query;</span>
+<span class="sd">    :param edns: edns_data to be sent to the client side. It SHOULD NOT be</span>
+<span class="sd">                 altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: called back while replying.&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">inplace_cache_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                           <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering from the cache.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. None;</span>
+<span class="sd">    :param rep: reply_info struct;</span>
+<span class="sd">    :param rcode: return code for the query;</span>
+<span class="sd">    :param edns: edns_data sent from the client side. The list with the EDNS</span>
+<span class="sd">                 options is accessible through edns.opt_list. It SHOULD NOT be</span>
+<span class="sd">                 altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    For demonstration purposes we want to see if EDNS option 65002 is present</span>
+<span class="sd">    and reply with a new value.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: called back while answering from cache.&quot;</span><span class="p">)</span>
+    <span class="c1"># Inspect the incoming EDNS options.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">edns_opt_list_is_empty</span><span class="p">(</span><span class="n">edns</span><span class="o">.</span><span class="n">opt_list</span><span class="p">):</span>
+        <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: available EDNS options:&quot;</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">o</span> <span class="ow">in</span> <span class="n">edns</span><span class="o">.</span><span class="n">opt_list_iter</span><span class="p">:</span>
+            <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python:    Code: {}, Data: &#39;{}&#39;&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">o</span><span class="o">.</span><span class="n">code</span><span class="p">,</span>
+                <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s1">&#39;{:02x}&#39;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">o</span><span class="o">.</span><span class="n">data</span><span class="p">)))</span>
+            <span class="k">if</span> <span class="n">o</span><span class="o">.</span><span class="n">code</span> <span class="o">==</span> <span class="mi">65002</span><span class="p">:</span>
+                <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: *found option code 65002*&quot;</span><span class="p">)</span>
+
+                <span class="c1"># add to opt_list</span>
+                <span class="c1"># Data MUST be represented in a bytearray.</span>
+                <span class="n">b</span> <span class="o">=</span> <span class="nb">bytearray</span><span class="o">.</span><span class="n">fromhex</span><span class="p">(</span><span class="s2">&quot;deadbeef&quot;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">edns_opt_list_append</span><span class="p">(</span><span class="n">opt_list_out</span><span class="p">,</span> <span class="n">o</span><span class="o">.</span><span class="n">code</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">region</span><span class="p">):</span>
+                    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: *added new option code 65002*&quot;</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: *failed to add new option code 65002*&quot;</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="bp">False</span>
+                <span class="k">break</span>
+
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">inplace_local_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                           <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering from local data.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. None;</span>
+<span class="sd">    :param rep: reply_info struct;</span>
+<span class="sd">    :param rcode: return code for the query;</span>
+<span class="sd">    :param edns: edns_data sent from the client side. The list with the</span>
+<span class="sd">                 EDNS options is accessible through edns.opt_list. It</span>
+<span class="sd">                 SHOULD NOT be altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: called back while replying with local data or chaos&quot;</span>
+             <span class="s2">&quot; reply.&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">inplace_servfail_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">rep</span><span class="p">,</span> <span class="n">rcode</span><span class="p">,</span> <span class="n">edns</span><span class="p">,</span> <span class="n">opt_list_out</span><span class="p">,</span>
+                              <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called when answering with SERVFAIL.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param qstate: module qstate. If not None the relevant opt_lists are</span>
+<span class="sd">                   available here;</span>
+<span class="sd">    :param rep: reply_info struct. None;</span>
+<span class="sd">    :param rcode: return code for the query. LDNS_RCODE_SERVFAIL;</span>
+<span class="sd">    :param edns: edns_data to be sent to the client side. If qstate is None</span>
+<span class="sd">                 edns.opt_list contains the EDNS options sent from the client</span>
+<span class="sd">                 side. It SHOULD NOT be altered;</span>
+<span class="sd">    :param opt_list_out: the list with the EDNS options that will be sent as a</span>
+<span class="sd">                         reply. It can be populated with EDNS options;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_list_out.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release. Current parameters:</span>
+<span class="sd">        ``repinfo``: Reply information for a communication point (comm_reply).</span>
+<span class="sd">                     It is None when the callback happens in the mesh</span>
+<span class="sd">                     states(modules).</span>
+
+<span class="sd">    :return: True on success, False on failure.</span>
+
+<span class="sd">    For demonstration purposes we want to reply with an empty EDNS code &#39;65003&#39;</span>
+<span class="sd">    and log the IP address(es) of the client(s).</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: called back while servfail.&quot;</span><span class="p">)</span>
+    <span class="c1"># Append the example ENDS option</span>
+    <span class="n">b</span> <span class="o">=</span> <span class="nb">bytearray</span><span class="o">.</span><span class="n">fromhex</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">)</span>
+    <span class="n">edns_opt_list_append</span><span class="p">(</span><span class="n">opt_list_out</span><span class="p">,</span> <span class="mi">65003</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">region</span><span class="p">)</span>
+
+    <span class="c1"># Log the client(s) IP address(es)</span>
+    <span class="n">comm_reply</span> <span class="o">=</span> <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;repinfo&#39;</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">comm_reply</span><span class="p">:</span>
+        <span class="c1"># If it is not None this callback was called before the query reached</span>
+        <span class="c1"># the mesh states(modules). There is only one client associated with</span>
+        <span class="c1"># this query.</span>
+        <span class="n">addr</span> <span class="o">=</span> <span class="n">comm_reply</span><span class="o">.</span><span class="n">addr</span>
+        <span class="n">port</span> <span class="o">=</span> <span class="n">comm_reply</span><span class="o">.</span><span class="n">port</span>
+        <span class="n">addr_family</span> <span class="o">=</span> <span class="n">comm_reply</span><span class="o">.</span><span class="n">family</span>
+        <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: Client IP: {}({}), port: {}&quot;</span>
+                 <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">addr_family</span><span class="p">,</span> <span class="n">port</span><span class="p">))</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="c1"># If it is not None this callback was called while the query is in the</span>
+        <span class="c1"># mesh states(modules). In this case they may be multiple clients</span>
+        <span class="c1"># waiting for this query.</span>
+        <span class="c1"># The following code is the same as with the resip.py example.</span>
+        <span class="n">rl</span> <span class="o">=</span> <span class="n">qstate</span><span class="o">.</span><span class="n">mesh_info</span><span class="o">.</span><span class="n">reply_list</span>
+        <span class="k">while</span> <span class="p">(</span><span class="n">rl</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">rl</span><span class="o">.</span><span class="n">query_reply</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="n">rl</span><span class="o">.</span><span class="n">query_reply</span>
+                <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: Client IP: {}({}), port: {}&quot;</span>
+                         <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">q</span><span class="o">.</span><span class="n">addr</span><span class="p">,</span> <span class="n">q</span><span class="o">.</span><span class="n">family</span><span class="p">,</span> <span class="n">q</span><span class="o">.</span><span class="n">port</span><span class="p">))</span>
+            <span class="n">rl</span> <span class="o">=</span> <span class="n">rl</span><span class="o">.</span><span class="n">next</span>
+
+
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">inplace_query_callback</span><span class="p">(</span><span class="n">qinfo</span><span class="p">,</span> <span class="n">flags</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">addr</span><span class="p">,</span> <span class="n">zone</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Function that will be registered as an inplace callback function.</span>
+<span class="sd">    It will be called before sending a query to a backend server.</span>
+
+<span class="sd">    :param qinfo: query_info struct;</span>
+<span class="sd">    :param flags: flags of the query;</span>
+<span class="sd">    :param qstate: module qstate. opt_lists are available here;</span>
+<span class="sd">    :param addr: struct sockaddr_storage. Address of the backend server;</span>
+<span class="sd">    :param zone: zone name in binary;</span>
+<span class="sd">    :param region: region to allocate temporary data. Needs to be used when we</span>
+<span class="sd">                   want to append a new option to opt_lists.</span>
+<span class="sd">    :param **kwargs: Dictionary that may contain parameters added in a future</span>
+<span class="sd">                     release.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: outgoing query to {}@{}&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">addr</span><span class="o">.</span><span class="n">addr</span><span class="p">,</span> <span class="n">addr</span><span class="o">.</span><span class="n">port</span><span class="p">))</span>
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">init_standard</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">env</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    New version of the init function.</span>
+
+<span class="sd">    The function&#39;s signature is the same as the C counterpart and allows for</span>
+<span class="sd">    extra functionality during init.</span>
+
+<span class="sd">    ..note:: This function is preferred by unbound over the old init function.</span>
+<span class="sd">    ..note:: The previously accessible configuration options can now be found in</span>
+<span class="sd">             env.cfg.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;python: inited script {}&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">env</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">python_script</span><span class="p">))</span>
+
+    <span class="c1"># Register the inplace_reply_callback function as an inplace callback</span>
+    <span class="c1"># function when answering a resolved query.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply</span><span class="p">(</span><span class="n">inplace_reply_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="c1"># Register the inplace_cache_callback function as an inplace callback</span>
+    <span class="c1"># function when answering from cache.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply_cache</span><span class="p">(</span><span class="n">inplace_cache_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="c1"># Register the inplace_local_callback function as an inplace callback</span>
+    <span class="c1"># function when answering from local data.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply_local</span><span class="p">(</span><span class="n">inplace_local_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="c1"># Register the inplace_servfail_callback function as an inplace callback</span>
+    <span class="c1"># function when answering with SERVFAIL.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_reply_servfail</span><span class="p">(</span><span class="n">inplace_servfail_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="c1"># Register the inplace_query_callback function as an inplace callback</span>
+    <span class="c1"># before sending a query to a backend server.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">register_inplace_cb_query</span><span class="p">(</span><span class="n">inplace_query_callback</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">init</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">cfg</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Previous version of the init function.</span>
+
+<span class="sd">    ..note:: This function is still supported for backwards compatibility when</span>
+<span class="sd">             the init_standard function is missing. When init_standard is</span>
+<span class="sd">             present this function SHOULD be omitted to avoid confusion to the</span>
+<span class="sd">             reader.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">deinit</span><span class="p">(</span><span class="nb">id</span><span class="p">):</span> <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">inform_super</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">superqstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span> <span class="k">return</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">operate</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_NEW</span><span class="p">)</span> <span class="ow">or</span> <span class="p">(</span><span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_PASS</span><span class="p">):</span>
+        <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_WAIT_MODULE</span> 
+        <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="k">elif</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_MODDONE</span><span class="p">:</span>
+        <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_FINISHED</span>
+        <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="n">log_err</span><span class="p">(</span><span class="s2">&quot;pythonmod: Unknown event&quot;</span><span class="p">)</span>
+    <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_ERROR</span>
+    <span class="k">return</span> <span class="bp">True</span>
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="../index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Inplace callbacks</a><ul>
+<li><a class="reference internal" href="#key-parts">Key parts</a><ul>
+<li><a class="reference internal" href="#registering-inplace-callback-functions">Registering inplace callback functions</a><ul>
+<li><a class="reference internal" href="#inplace-callback-reply-functions">Inplace callback reply functions</a></li>
+<li><a class="reference internal" href="#inplace-callback-reply-cache-functions">Inplace callback reply_cache functions</a></li>
+<li><a class="reference internal" href="#inplace-callback-reply-local-functions">Inplace callback reply_local functions</a></li>
+<li><a class="reference internal" href="#inplace-callback-reply-servfail-functions">Inplace callback reply_servfail functions</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#testing">Testing</a></li>
+<li><a class="reference internal" href="#complete-source-code">Complete source code</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="example5.html"
+                        title="previous chapter">EDNS options</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="../usecase.html"
+                        title="next chapter">Use cases (examples)</a></p>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="../usecase.html" title="Use cases (examples)"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="example5.html" title="EDNS options"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" >Examples</a> &#187;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &#169; Copyright 2009, Zdenek Vasicek, Marek Vavrusa.
+      Last updated on Aug 05, 2019.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.6.7.
+    </div>
+  </body>
+</html>

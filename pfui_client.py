@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 """
-Written using example python module scripts in Unbound source.
+Written using example python module scripts found in Unbound source.
+
+inplace_cache_callback(), init(), init_standard(), deinit(), inform_super(), and operate() are SWIG provided functions
+declared here and called by Unbound depending on EVENT type..
 
 :param qinfo: query_info struct;
 :param qstate: module qstate. None;
@@ -23,7 +26,7 @@ from json import dumps
 
 def dataHex(data, prefix=""):
     """ Converts binary string data to display form.
-        Function taken from Unbound examples. """
+        Function taken from Unbound source examples. """
 
     res = ""
     for i in range(0, (len(data)+15)/16):

@@ -1,0 +1,618 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Configuration interface &#8212; Unbound scriptable interface 1.0.0 documentation</title>
+    <link rel="stylesheet" href="../_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '1.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  false,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="prev" title="Scriptable functions" href="functions.html" /> 
+  </head>
+  <body>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="functions.html" title="Scriptable functions"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Unbound module documentation</a> &#187;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="configuration-interface">
+<h1>Configuration interface<a class="headerlink" href="#configuration-interface" title="Permalink to this headline">¶</a></h1>
+<p>Currently passed to Python module in init(module_id, cfg).</p>
+<div class="section" id="config-file">
+<h2>config_file<a class="headerlink" href="#config-file" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="config_file">
+<em class="property">class </em><code class="descname">config_file</code><a class="headerlink" href="#config_file" title="Permalink to this definition">¶</a></dt>
+<dd><p>This class provides these data attributes:</p>
+<dl class="attribute">
+<dt id="config_file.verbosity">
+<code class="descname">verbosity</code><a class="headerlink" href="#config_file.verbosity" title="Permalink to this definition">¶</a></dt>
+<dd><p>Verbosity level as specified in the config file.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.stat_interval">
+<code class="descname">stat_interval</code><a class="headerlink" href="#config_file.stat_interval" title="Permalink to this definition">¶</a></dt>
+<dd><p>Statistics interval (in seconds).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.stat_cumulative">
+<code class="descname">stat_cumulative</code><a class="headerlink" href="#config_file.stat_cumulative" title="Permalink to this definition">¶</a></dt>
+<dd><p>If false, statistics values are reset after printing them.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.stat_extended">
+<code class="descname">stat_extended</code><a class="headerlink" href="#config_file.stat_extended" title="Permalink to this definition">¶</a></dt>
+<dd><p>If true, the statistics are kept in greater detail.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.num_threads">
+<code class="descname">num_threads</code><a class="headerlink" href="#config_file.num_threads" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of threads to create.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.port">
+<code class="descname">port</code><a class="headerlink" href="#config_file.port" title="Permalink to this definition">¶</a></dt>
+<dd><p>Port on which queries are answered.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.do_ip4">
+<code class="descname">do_ip4</code><a class="headerlink" href="#config_file.do_ip4" title="Permalink to this definition">¶</a></dt>
+<dd><p>Do ip4 query support.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.do_ip6">
+<code class="descname">do_ip6</code><a class="headerlink" href="#config_file.do_ip6" title="Permalink to this definition">¶</a></dt>
+<dd><p>Do ip6 query support.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.do_udp">
+<code class="descname">do_udp</code><a class="headerlink" href="#config_file.do_udp" title="Permalink to this definition">¶</a></dt>
+<dd><p>Do udp query support.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.do_tcp">
+<code class="descname">do_tcp</code><a class="headerlink" href="#config_file.do_tcp" title="Permalink to this definition">¶</a></dt>
+<dd><p>Do tcp query support.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.outgoing_num_ports">
+<code class="descname">outgoing_num_ports</code><a class="headerlink" href="#config_file.outgoing_num_ports" title="Permalink to this definition">¶</a></dt>
+<dd><p>Outgoing port range number of ports (per thread).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.outgoing_num_tcp">
+<code class="descname">outgoing_num_tcp</code><a class="headerlink" href="#config_file.outgoing_num_tcp" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of outgoing tcp buffers per (per thread).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.incoming_num_tcp">
+<code class="descname">incoming_num_tcp</code><a class="headerlink" href="#config_file.incoming_num_tcp" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of incoming tcp buffers per (per thread).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.outgoing_avail_ports">
+<code class="descname">outgoing_avail_ports</code><a class="headerlink" href="#config_file.outgoing_avail_ports" title="Permalink to this definition">¶</a></dt>
+<dd><p>Allowed udp port numbers, array with 0 if not allowed.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.msg_buffer_size">
+<code class="descname">msg_buffer_size</code><a class="headerlink" href="#config_file.msg_buffer_size" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of bytes buffer size for DNS messages.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.msg_cache_size">
+<code class="descname">msg_cache_size</code><a class="headerlink" href="#config_file.msg_cache_size" title="Permalink to this definition">¶</a></dt>
+<dd><p>Size of the message cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.msg_cache_slabs">
+<code class="descname">msg_cache_slabs</code><a class="headerlink" href="#config_file.msg_cache_slabs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Slabs in the message cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.num_queries_per_thread">
+<code class="descname">num_queries_per_thread</code><a class="headerlink" href="#config_file.num_queries_per_thread" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of queries every thread can service.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.jostle_time">
+<code class="descname">jostle_time</code><a class="headerlink" href="#config_file.jostle_time" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of msec to wait before items can be jostled out.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.rrset_cache_size">
+<code class="descname">rrset_cache_size</code><a class="headerlink" href="#config_file.rrset_cache_size" title="Permalink to this definition">¶</a></dt>
+<dd><p>Size of the rrset cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.rrset_cache_slabs">
+<code class="descname">rrset_cache_slabs</code><a class="headerlink" href="#config_file.rrset_cache_slabs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Slabs in the rrset cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.host_ttl">
+<code class="descname">host_ttl</code><a class="headerlink" href="#config_file.host_ttl" title="Permalink to this definition">¶</a></dt>
+<dd><p>Host cache ttl in seconds.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.lame_ttl">
+<code class="descname">lame_ttl</code><a class="headerlink" href="#config_file.lame_ttl" title="Permalink to this definition">¶</a></dt>
+<dd><p>Host is lame for a zone ttl, in seconds.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.infra_cache_slabs">
+<code class="descname">infra_cache_slabs</code><a class="headerlink" href="#config_file.infra_cache_slabs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of slabs in the infra host cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.infra_cache_numhosts">
+<code class="descname">infra_cache_numhosts</code><a class="headerlink" href="#config_file.infra_cache_numhosts" title="Permalink to this definition">¶</a></dt>
+<dd><p>Max number of hosts in the infra cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.infra_cache_lame_size">
+<code class="descname">infra_cache_lame_size</code><a class="headerlink" href="#config_file.infra_cache_lame_size" title="Permalink to this definition">¶</a></dt>
+<dd><p>Max size of lame zones per host in the infra cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.target_fetch_policy">
+<code class="descname">target_fetch_policy</code><a class="headerlink" href="#config_file.target_fetch_policy" title="Permalink to this definition">¶</a></dt>
+<dd><p>The target fetch policy for the iterator.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.if_automatic">
+<code class="descname">if_automatic</code><a class="headerlink" href="#config_file.if_automatic" title="Permalink to this definition">¶</a></dt>
+<dd><p>Automatic interface for incoming messages. Uses ipv6 remapping,
+and recvmsg/sendmsg ancillary data to detect interfaces, boolean.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.num_ifs">
+<code class="descname">num_ifs</code><a class="headerlink" href="#config_file.num_ifs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of interfaces to open. If 0 default all interfaces.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.ifs">
+<code class="descname">ifs</code><a class="headerlink" href="#config_file.ifs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Interface description strings (IP addresses).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.num_out_ifs">
+<code class="descname">num_out_ifs</code><a class="headerlink" href="#config_file.num_out_ifs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of outgoing interfaces to open.
+If 0 default all interfaces.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.out_ifs">
+<code class="descname">out_ifs</code><a class="headerlink" href="#config_file.out_ifs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Outgoing interface description strings (IP addresses).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.root_hints">
+<code class="descname">root_hints</code><a class="headerlink" href="#config_file.root_hints" title="Permalink to this definition">¶</a></dt>
+<dd><p>The root hints.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.stubs">
+<code class="descname">stubs</code><a class="headerlink" href="#config_file.stubs" title="Permalink to this definition">¶</a></dt>
+<dd><p>The stub definitions, linked list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.forwards">
+<code class="descname">forwards</code><a class="headerlink" href="#config_file.forwards" title="Permalink to this definition">¶</a></dt>
+<dd><p>The forward zone definitions, linked list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.donotqueryaddrs">
+<code class="descname">donotqueryaddrs</code><a class="headerlink" href="#config_file.donotqueryaddrs" title="Permalink to this definition">¶</a></dt>
+<dd><p>List of donotquery addresses, linked list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.acls">
+<code class="descname">acls</code><a class="headerlink" href="#config_file.acls" title="Permalink to this definition">¶</a></dt>
+<dd><p>List of access control entries, linked list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.donotquery_localhost">
+<code class="descname">donotquery_localhost</code><a class="headerlink" href="#config_file.donotquery_localhost" title="Permalink to this definition">¶</a></dt>
+<dd><p>Use default localhost donotqueryaddr entries.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.harden_short_bufsize">
+<code class="descname">harden_short_bufsize</code><a class="headerlink" href="#config_file.harden_short_bufsize" title="Permalink to this definition">¶</a></dt>
+<dd><p>Harden against very small edns buffer sizes.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.harden_large_queries">
+<code class="descname">harden_large_queries</code><a class="headerlink" href="#config_file.harden_large_queries" title="Permalink to this definition">¶</a></dt>
+<dd><p>Harden against very large query sizes.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.harden_glue">
+<code class="descname">harden_glue</code><a class="headerlink" href="#config_file.harden_glue" title="Permalink to this definition">¶</a></dt>
+<dd><p>Harden against spoofed glue (out of zone data).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.harden_dnssec_stripped">
+<code class="descname">harden_dnssec_stripped</code><a class="headerlink" href="#config_file.harden_dnssec_stripped" title="Permalink to this definition">¶</a></dt>
+<dd><p>Harden against receiving no DNSSEC data for trust anchor.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.harden_referral_path">
+<code class="descname">harden_referral_path</code><a class="headerlink" href="#config_file.harden_referral_path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Harden the referral path, query for NS,A,AAAA and validate.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.use_caps_bits_for_id">
+<code class="descname">use_caps_bits_for_id</code><a class="headerlink" href="#config_file.use_caps_bits_for_id" title="Permalink to this definition">¶</a></dt>
+<dd><p>Use 0x20 bits in query as random ID bits.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.private_address">
+<code class="descname">private_address</code><a class="headerlink" href="#config_file.private_address" title="Permalink to this definition">¶</a></dt>
+<dd><p>Strip away these private addrs from answers, no DNS Rebinding.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.private_domain">
+<code class="descname">private_domain</code><a class="headerlink" href="#config_file.private_domain" title="Permalink to this definition">¶</a></dt>
+<dd><p>Allow domain (and subdomains) to use private address space.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.unwanted_threshold">
+<code class="descname">unwanted_threshold</code><a class="headerlink" href="#config_file.unwanted_threshold" title="Permalink to this definition">¶</a></dt>
+<dd><p>What threshold for unwanted action.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.chrootdir">
+<code class="descname">chrootdir</code><a class="headerlink" href="#config_file.chrootdir" title="Permalink to this definition">¶</a></dt>
+<dd><p>Chrootdir, if not “” or chroot will be done.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.username">
+<code class="descname">username</code><a class="headerlink" href="#config_file.username" title="Permalink to this definition">¶</a></dt>
+<dd><p>Username to change to, if not “”.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.directory">
+<code class="descname">directory</code><a class="headerlink" href="#config_file.directory" title="Permalink to this definition">¶</a></dt>
+<dd><p>Working directory.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.logfile">
+<code class="descname">logfile</code><a class="headerlink" href="#config_file.logfile" title="Permalink to this definition">¶</a></dt>
+<dd><p>Filename to log to.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.pidfile">
+<code class="descname">pidfile</code><a class="headerlink" href="#config_file.pidfile" title="Permalink to this definition">¶</a></dt>
+<dd><p>Pidfile to write pid to.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.use_syslog">
+<code class="descname">use_syslog</code><a class="headerlink" href="#config_file.use_syslog" title="Permalink to this definition">¶</a></dt>
+<dd><p>Should log messages be sent to syslogd.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.hide_identity">
+<code class="descname">hide_identity</code><a class="headerlink" href="#config_file.hide_identity" title="Permalink to this definition">¶</a></dt>
+<dd><p>Do not report identity (id.server, hostname.bind).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.hide_version">
+<code class="descname">hide_version</code><a class="headerlink" href="#config_file.hide_version" title="Permalink to this definition">¶</a></dt>
+<dd><p>Do not report version (version.server, version.bind).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.identity">
+<code class="descname">identity</code><a class="headerlink" href="#config_file.identity" title="Permalink to this definition">¶</a></dt>
+<dd><p>Identity, hostname is returned if “”.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.version">
+<code class="descname">version</code><a class="headerlink" href="#config_file.version" title="Permalink to this definition">¶</a></dt>
+<dd><p>Version, package version returned if “”.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.module_conf">
+<code class="descname">module_conf</code><a class="headerlink" href="#config_file.module_conf" title="Permalink to this definition">¶</a></dt>
+<dd><p>The module configuration string.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.trust_anchor_file_list">
+<code class="descname">trust_anchor_file_list</code><a class="headerlink" href="#config_file.trust_anchor_file_list" title="Permalink to this definition">¶</a></dt>
+<dd><p>Files with trusted DS and DNSKEYs in zonefile format, list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.trust_anchor_list">
+<code class="descname">trust_anchor_list</code><a class="headerlink" href="#config_file.trust_anchor_list" title="Permalink to this definition">¶</a></dt>
+<dd><p>List of trustanchor keys, linked list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.trusted_keys_file_list">
+<code class="descname">trusted_keys_file_list</code><a class="headerlink" href="#config_file.trusted_keys_file_list" title="Permalink to this definition">¶</a></dt>
+<dd><p>Files with trusted DNSKEYs in named.conf format, list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.dlv_anchor_file">
+<code class="descname">dlv_anchor_file</code><a class="headerlink" href="#config_file.dlv_anchor_file" title="Permalink to this definition">¶</a></dt>
+<dd><p>DLV anchor file.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.dlv_anchor_list">
+<code class="descname">dlv_anchor_list</code><a class="headerlink" href="#config_file.dlv_anchor_list" title="Permalink to this definition">¶</a></dt>
+<dd><p>DLV anchor inline.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.max_ttl">
+<code class="descname">max_ttl</code><a class="headerlink" href="#config_file.max_ttl" title="Permalink to this definition">¶</a></dt>
+<dd><p>The number of seconds maximal TTL used for RRsets and messages.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.val_date_override">
+<code class="descname">val_date_override</code><a class="headerlink" href="#config_file.val_date_override" title="Permalink to this definition">¶</a></dt>
+<dd><p>If not 0, this value is the validation date for RRSIGs.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.bogus_ttl">
+<code class="descname">bogus_ttl</code><a class="headerlink" href="#config_file.bogus_ttl" title="Permalink to this definition">¶</a></dt>
+<dd><p>This value sets the number of seconds before revalidating bogus.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.val_clean_additional">
+<code class="descname">val_clean_additional</code><a class="headerlink" href="#config_file.val_clean_additional" title="Permalink to this definition">¶</a></dt>
+<dd><p>Should validator clean additional section for secure msgs.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.val_permissive_mode">
+<code class="descname">val_permissive_mode</code><a class="headerlink" href="#config_file.val_permissive_mode" title="Permalink to this definition">¶</a></dt>
+<dd><p>Should validator allow bogus messages to go through.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.val_nsec3_key_iterations">
+<code class="descname">val_nsec3_key_iterations</code><a class="headerlink" href="#config_file.val_nsec3_key_iterations" title="Permalink to this definition">¶</a></dt>
+<dd><p>Nsec3 maximum iterations per key size, string.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.key_cache_size">
+<code class="descname">key_cache_size</code><a class="headerlink" href="#config_file.key_cache_size" title="Permalink to this definition">¶</a></dt>
+<dd><p>Size of the key cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.key_cache_slabs">
+<code class="descname">key_cache_slabs</code><a class="headerlink" href="#config_file.key_cache_slabs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Slabs in the key cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.neg_cache_size">
+<code class="descname">neg_cache_size</code><a class="headerlink" href="#config_file.neg_cache_size" title="Permalink to this definition">¶</a></dt>
+<dd><p>Size of the neg cache.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.local_zones">
+<code class="descname">local_zones</code><a class="headerlink" href="#config_file.local_zones" title="Permalink to this definition">¶</a></dt>
+<dd><p>Local zones config.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.local_zones_nodefault">
+<code class="descname">local_zones_nodefault</code><a class="headerlink" href="#config_file.local_zones_nodefault" title="Permalink to this definition">¶</a></dt>
+<dd><p>Local zones nodefault list.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.local_data">
+<code class="descname">local_data</code><a class="headerlink" href="#config_file.local_data" title="Permalink to this definition">¶</a></dt>
+<dd><p>Local data RRs configured.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.remote_control_enable">
+<code class="descname">remote_control_enable</code><a class="headerlink" href="#config_file.remote_control_enable" title="Permalink to this definition">¶</a></dt>
+<dd><p>Remote control section. enable toggle.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.control_ifs">
+<code class="descname">control_ifs</code><a class="headerlink" href="#config_file.control_ifs" title="Permalink to this definition">¶</a></dt>
+<dd><p>The interfaces the remote control should listen on.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.control_port">
+<code class="descname">control_port</code><a class="headerlink" href="#config_file.control_port" title="Permalink to this definition">¶</a></dt>
+<dd><p>Port number for the control port.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.server_key_file">
+<code class="descname">server_key_file</code><a class="headerlink" href="#config_file.server_key_file" title="Permalink to this definition">¶</a></dt>
+<dd><p>Private key file for server.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.server_cert_file">
+<code class="descname">server_cert_file</code><a class="headerlink" href="#config_file.server_cert_file" title="Permalink to this definition">¶</a></dt>
+<dd><p>Certificate file for server.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.control_key_file">
+<code class="descname">control_key_file</code><a class="headerlink" href="#config_file.control_key_file" title="Permalink to this definition">¶</a></dt>
+<dd><p>Private key file for unbound-control.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.control_cert_file">
+<code class="descname">control_cert_file</code><a class="headerlink" href="#config_file.control_cert_file" title="Permalink to this definition">¶</a></dt>
+<dd><p>Certificate file for unbound-control.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.do_daemonize">
+<code class="descname">do_daemonize</code><a class="headerlink" href="#config_file.do_daemonize" title="Permalink to this definition">¶</a></dt>
+<dd><p>Daemonize, i.e. fork into the background.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="config_file.python_script">
+<code class="descname">python_script</code><a class="headerlink" href="#config_file.python_script" title="Permalink to this definition">¶</a></dt>
+<dd><p>Python script file.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="../index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Configuration interface</a><ul>
+<li><a class="reference internal" href="#config-file">config_file</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="functions.html"
+                        title="previous chapter">Scriptable functions</a></p>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="functions.html" title="Scriptable functions"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" >Unbound module documentation</a> &#187;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &#169; Copyright 2009, Zdenek Vasicek, Marek Vavrusa.
+      Last updated on Aug 05, 2019.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.6.7.
+    </div>
+  </body>
+</html>

@@ -1,0 +1,253 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Response modification &#8212; Unbound scriptable interface 1.0.0 documentation</title>
+    <link rel="stylesheet" href="../_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '1.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  false,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="DNS-based language dictionary" href="example4.html" />
+    <link rel="prev" title="Response generation" href="example2.html" /> 
+  </head>
+  <body>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="example4.html" title="DNS-based language dictionary"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="example2.html" title="Response generation"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Examples</a> &#187;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="response-modification">
+<h1>Response modification<a class="headerlink" href="#response-modification" title="Permalink to this headline">¶</a></h1>
+<p>This example shows how to modify the response produced by the <code class="docutils literal"><span class="pre">iterator</span></code> module.</p>
+<p>As soon as the iterator module returns the response, we :</p>
+<ol class="arabic simple">
+<li>invalidate the data in cache</li>
+<li>modify the response <em>TTL</em></li>
+<li>rewrite the data in cache</li>
+<li>return modified packet</li>
+</ol>
+<p>Note that the steps 1 and 3 are necessary only in case, the python module is the first module in the processing chain.
+In other cases, the validator module guarantees updating data which are produced by iterator module.</p>
+<div class="section" id="complete-source-code">
+<h2>Complete source code<a class="headerlink" href="#complete-source-code" title="Permalink to this headline">¶</a></h2>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd"> resmod.py: This example shows how to modify the response from iterator </span>
+
+<span class="sd"> Copyright (c) 2009, Zdenek Vasicek (vasicek AT fit.vutbr.cz)</span>
+<span class="sd">                     Marek Vavrusa  (xvavru00 AT stud.fit.vutbr.cz)</span>
+
+<span class="sd"> This software is open source.</span>
+<span class="sd"> </span>
+<span class="sd"> Redistribution and use in source and binary forms, with or without</span>
+<span class="sd"> modification, are permitted provided that the following conditions</span>
+<span class="sd"> are met:</span>
+<span class="sd"> </span>
+<span class="sd">    * Redistributions of source code must retain the above copyright notice,</span>
+<span class="sd">      this list of conditions and the following disclaimer.</span>
+<span class="sd"> </span>
+<span class="sd">    * Redistributions in binary form must reproduce the above copyright notice,</span>
+<span class="sd">      this list of conditions and the following disclaimer in the documentation</span>
+<span class="sd">      and/or other materials provided with the distribution.</span>
+<span class="sd"> </span>
+<span class="sd">    * Neither the name of the organization nor the names of its</span>
+<span class="sd">      contributors may be used to endorse or promote products derived from this</span>
+<span class="sd">      software without specific prior written permission.</span>
+
+<span class="sd"> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS</span>
+<span class="sd"> &quot;AS IS&quot; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED</span>
+<span class="sd"> TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR</span>
+<span class="sd"> PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE</span>
+<span class="sd"> LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="sd"> CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="sd"> SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="sd"> INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="sd"> CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="sd"> ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="sd"> POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="sd">&#39;&#39;&#39;</span>
+
+<span class="k">def</span> <span class="nf">init</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">cfg</span><span class="p">):</span> <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">deinit</span><span class="p">(</span><span class="nb">id</span><span class="p">):</span> <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">inform_super</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">superqstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span> <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">setTTL</span><span class="p">(</span><span class="n">qstate</span><span class="p">,</span> <span class="n">ttl</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Updates return_msg TTL and the TTL of all the RRs&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">qstate</span><span class="o">.</span><span class="n">return_msg</span><span class="p">:</span>
+        <span class="n">qstate</span><span class="o">.</span><span class="n">return_msg</span><span class="o">.</span><span class="n">rep</span><span class="o">.</span><span class="n">ttl</span> <span class="o">=</span> <span class="n">ttl</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">qstate</span><span class="o">.</span><span class="n">return_msg</span><span class="o">.</span><span class="n">rep</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="n">qstate</span><span class="o">.</span><span class="n">return_msg</span><span class="o">.</span><span class="n">rep</span><span class="o">.</span><span class="n">rrset_count</span><span class="p">):</span>
+                <span class="n">d</span> <span class="o">=</span> <span class="n">qstate</span><span class="o">.</span><span class="n">return_msg</span><span class="o">.</span><span class="n">rep</span><span class="o">.</span><span class="n">rrsets</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">entry</span><span class="o">.</span><span class="n">data</span>
+                <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="n">d</span><span class="o">.</span><span class="n">count</span><span class="o">+</span><span class="n">d</span><span class="o">.</span><span class="n">rrsig_count</span><span class="p">):</span>
+                    <span class="n">d</span><span class="o">.</span><span class="n">rr_ttl</span><span class="p">[</span><span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">ttl</span>
+
+<span class="k">def</span> <span class="nf">operate</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_NEW</span><span class="p">)</span> <span class="ow">or</span> <span class="p">(</span><span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_PASS</span><span class="p">):</span>
+        <span class="c1">#pass the query to validator</span>
+        <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_WAIT_MODULE</span> 
+        <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_MODDONE</span><span class="p">:</span>
+        <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: iterator module done&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">qstate</span><span class="o">.</span><span class="n">return_msg</span><span class="p">:</span>
+            <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_FINISHED</span> 
+            <span class="k">return</span> <span class="bp">True</span>
+
+        <span class="c1">#modify the response</span>
+
+        <span class="n">qdn</span> <span class="o">=</span> <span class="n">qstate</span><span class="o">.</span><span class="n">qinfo</span><span class="o">.</span><span class="n">qname_str</span>
+        <span class="k">if</span> <span class="n">qdn</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.nic.cz.&quot;</span><span class="p">):</span>
+            <span class="c1">#invalidate response in cache added by iterator</span>
+            <span class="c1">#invalidateQueryInCache(qstate, qstate.return_msg.qinfo)</span>
+
+            <span class="c1">#modify TTL to 10 secs and store response in cache</span>
+            <span class="c1">#setTTL(qstate, 5)</span>
+            <span class="c1">#if not storeQueryInCache(qstate, qstate.return_msg.qinfo, qstate.return_msg.rep, 0):</span>
+            <span class="c1">#    qstate.ext_state[id] = MODULE_ERROR</span>
+            <span class="c1">#    return False</span>
+
+            <span class="c1">#modify TTL of response, which will be send to a) validator and then b) client</span>
+            <span class="n">setTTL</span><span class="p">(</span><span class="n">qstate</span><span class="p">,</span> <span class="mi">10</span><span class="p">)</span>
+            <span class="n">qstate</span><span class="o">.</span><span class="n">return_rcode</span> <span class="o">=</span> <span class="n">RCODE_NOERROR</span>
+
+        <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_FINISHED</span> 
+        <span class="k">return</span> <span class="bp">True</span>
+      
+    <span class="n">log_err</span><span class="p">(</span><span class="s2">&quot;pythonmod: bad event&quot;</span><span class="p">)</span>
+    <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_ERROR</span>
+    <span class="k">return</span> <span class="bp">True</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Permalink to this headline">¶</a></h2>
+<p>Run Unbound server:</p>
+<p><code class="docutils literal"><span class="pre">root&#64;localhost&gt;unbound</span> <span class="pre">-dv</span> <span class="pre">-c</span> <span class="pre">./test-resmod.conf</span></code></p>
+<p>Issue a query for name ending with “nic.cz.”</p>
+<p><code class="docutils literal"><span class="pre">&gt;&gt;&gt;dig</span> <span class="pre">A</span> <span class="pre">&#64;127.0.0.1</span> <span class="pre">www.nic.cz</span></code></p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="p">;;</span> <span class="k">global</span> <span class="n">options</span><span class="p">:</span>  <span class="n">printcmd</span>
+<span class="p">;;</span> <span class="n">Got</span> <span class="n">answer</span><span class="p">:</span>
+<span class="p">;;</span> <span class="o">-&gt;&gt;</span><span class="n">HEADER</span><span class="o">&lt;&lt;-</span> <span class="n">opcode</span><span class="p">:</span> <span class="n">QUERY</span><span class="p">,</span> <span class="n">status</span><span class="p">:</span> <span class="n">NOERROR</span><span class="p">,</span> <span class="nb">id</span><span class="p">:</span> <span class="mi">48831</span>
+<span class="p">;;</span> <span class="n">flags</span><span class="p">:</span> <span class="n">qr</span> <span class="n">rd</span> <span class="n">ra</span><span class="p">;</span> <span class="n">QUERY</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="n">ANSWER</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="n">AUTHORITY</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="n">ADDITIONAL</span><span class="p">:</span> <span class="mi">5</span>
+
+<span class="p">;;</span> <span class="n">QUESTION</span> <span class="n">SECTION</span><span class="p">:</span>
+<span class="p">;</span><span class="n">www</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>                    <span class="n">IN</span>      <span class="n">A</span>
+
+<span class="p">;;</span> <span class="n">ANSWER</span> <span class="n">SECTION</span><span class="p">:</span>
+<span class="n">www</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>             <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">A</span>       <span class="mf">217.31</span><span class="o">.</span><span class="mf">205.50</span>
+
+<span class="p">;;</span> <span class="n">AUTHORITY</span> <span class="n">SECTION</span><span class="p">:</span>
+<span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>                 <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">NS</span>      <span class="n">e</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>
+<span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>                 <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">NS</span>      <span class="n">a</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>
+<span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>                 <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">NS</span>      <span class="n">c</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>
+
+<span class="p">;;</span> <span class="n">ADDITIONAL</span> <span class="n">SECTION</span><span class="p">:</span>
+<span class="n">a</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>            <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">A</span>       <span class="mf">217.31</span><span class="o">.</span><span class="mf">205.180</span>
+<span class="n">a</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>            <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">AAAA</span>    <span class="mi">2001</span><span class="p">:</span><span class="mi">1488</span><span class="p">:</span><span class="n">dada</span><span class="p">:</span><span class="mi">176</span><span class="p">::</span><span class="mi">180</span>
+<span class="n">c</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>            <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">A</span>       <span class="mf">195.66</span><span class="o">.</span><span class="mf">241.202</span>
+<span class="n">c</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>            <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">AAAA</span>    <span class="mi">2</span><span class="n">a01</span><span class="p">:</span><span class="mi">40</span><span class="p">:</span><span class="mi">1000</span><span class="p">::</span><span class="mi">2</span>
+<span class="n">e</span><span class="o">.</span><span class="n">ns</span><span class="o">.</span><span class="n">nic</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>            <span class="mi">10</span>      <span class="n">IN</span>      <span class="n">A</span>       <span class="mf">194.146</span><span class="o">.</span><span class="mf">105.38</span>
+
+<span class="p">;;</span> <span class="n">Query</span> <span class="n">time</span><span class="p">:</span> <span class="mi">166</span> <span class="n">msec</span>
+<span class="p">;;</span> <span class="n">SERVER</span><span class="p">:</span> <span class="mf">127.0</span><span class="o">.</span><span class="mf">0.1</span><span class="c1">#53(127.0.0.1)</span>
+<span class="p">;;</span> <span class="n">WHEN</span><span class="p">:</span> <span class="n">Mon</span> <span class="n">Jan</span> <span class="mi">02</span> <span class="mi">13</span><span class="p">:</span><span class="mi">39</span><span class="p">:</span><span class="mi">43</span> <span class="mi">2009</span>
+<span class="p">;;</span> <span class="n">MSG</span> <span class="n">SIZE</span>  <span class="n">rcvd</span><span class="p">:</span> <span class="mi">199</span>
+</pre></div>
+</div>
+<p>As you can see, TTL of all the records is set to 10.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="../index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Response modification</a><ul>
+<li><a class="reference internal" href="#complete-source-code">Complete source code</a></li>
+<li><a class="reference internal" href="#testing">Testing</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="example2.html"
+                        title="previous chapter">Response generation</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="example4.html"
+                        title="next chapter">DNS-based language dictionary</a></p>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="example4.html" title="DNS-based language dictionary"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="example2.html" title="Response generation"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" >Examples</a> &#187;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &#169; Copyright 2009, Zdenek Vasicek, Marek Vavrusa.
+      Last updated on Aug 05, 2019.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.6.7.
+    </div>
+  </body>
+</html>

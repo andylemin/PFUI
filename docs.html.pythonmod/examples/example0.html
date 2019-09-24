@@ -1,0 +1,335 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Fundamentals &#8212; Unbound scriptable interface 1.0.0 documentation</title>
+    <link rel="stylesheet" href="../_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '1.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  false,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Packet logger" href="example1.html" />
+    <link rel="prev" title="Examples" href="index.html" /> 
+  </head>
+  <body>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="example1.html" title="Packet logger"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Examples"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Examples</a> &#187;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="fundamentals">
+<span id="example-handler"></span><h1>Fundamentals<a class="headerlink" href="#fundamentals" title="Permalink to this headline">¶</a></h1>
+<p>This basic example shows how to create simple python module which will pass on the requests to the iterator.</p>
+<div class="section" id="how-to-enable-python-module">
+<h2>How to enable python module<a class="headerlink" href="#how-to-enable-python-module" title="Permalink to this headline">¶</a></h2>
+<p>If you look into unbound configuration file, you can find the option <cite>module-config</cite> which specifies the names and the order of modules to be used.
+Example configuration:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="n">module</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="s2">&quot;validator python iterator&quot;</span>
+</pre></div>
+</div>
+<p>As soon as the DNS query arrives, Unbound calls modules starting from leftmost - the validator <em>(it is the first module on the list)</em>.
+The validator does not know the answer <em>(it can only validate)</em>, thus it will pass on the event to the next module.
+Next module is python which can</p>
+<blockquote>
+<div><ol class="loweralpha simple">
+<li><dl class="first docutils">
+<dt>generate answer <em>(response)</em></dt>
+<dd>When python module generates the response unbound calls validator. Validator grabs the answer and determines the security flag.</dd>
+</dl>
+</li>
+<li><dl class="first docutils">
+<dt>pass on the event to the iterator.</dt>
+<dd>When iterator resolves the query, Unbound informs python module (event <a class="reference internal" href="../modules/env.html#module_event_moddone" title="module_event_moddone"><code class="xref py py-data docutils literal"><span class="pre">module_event_moddone</span></code></a>). In the end, when the python module is done, validator is called.</dd>
+</dl>
+</li>
+</ol>
+</div></blockquote>
+<p>Note that the python module is called with <a class="reference internal" href="../modules/env.html#module_event_pass" title="module_event_pass"><code class="xref py py-data docutils literal"><span class="pre">module_event_pass</span></code></a> event, because new DNS event was already handled by validator.</p>
+<p>Another situation occurs when we use the following configuration:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="n">module</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="s2">&quot;python validator iterator&quot;</span>
+</pre></div>
+</div>
+<p>Python module is the first module here, so it’s invoked with <a class="reference internal" href="../modules/env.html#module_event_new" title="module_event_new"><code class="xref py py-data docutils literal"><span class="pre">module_event_new</span></code></a> event <em>(new query)</em>.</p>
+<p>On Python module initialization, module loads script from <cite>python-script</cite> option:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="n">python</span><span class="o">-</span><span class="n">script</span><span class="p">:</span> <span class="s2">&quot;/unbound/test/ubmodule.py&quot;</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="simple-python-module-step-by-step">
+<h2>Simple python module step by step<a class="headerlink" href="#simple-python-module-step-by-step" title="Permalink to this headline">¶</a></h2>
+<p>Script file must contain four compulsory functions:</p>
+<dl class="function">
+<dt id="init">
+<code class="descname">init</code><span class="sig-paren">(</span><em>id</em>, <em>cfg</em><span class="sig-paren">)</span><a class="headerlink" href="#init" title="Permalink to this definition">¶</a></dt>
+<dd><p>Initialize module internals, like database etc.
+Called just once on module load.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>id</strong> – module identifier (integer)</li>
+<li><strong>cfg</strong> – <a class="reference internal" href="../modules/config.html#config_file" title="config_file"><code class="xref py py-class docutils literal"><span class="pre">config_file</span></code></a> configuration structure</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">init</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">cfg</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: init called, module id is </span><span class="si">%d</span><span class="s2"> port: </span><span class="si">%d</span><span class="s2"> script: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">cfg</span><span class="o">.</span><span class="n">port</span><span class="p">,</span> <span class="n">cfg</span><span class="o">.</span><span class="n">python_script</span><span class="p">))</span>
+   <span class="k">return</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<dl class="function">
+<dt id="init_standard">
+<code class="descname">init_standard</code><span class="sig-paren">(</span><em>id</em>, <em>env</em><span class="sig-paren">)</span><a class="headerlink" href="#init_standard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Initialize module internals, like database etc.
+Called just once on module load.</p>
+<p><em>Preferred</em> over the init() function above as this function’s signature is the
+same as the C counterpart and allows for extra functionality during init.
+The previously accessible configuration options can now be found in env.cfg.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>id</strong> – module identifier (integer)</li>
+<li><strong>env</strong> – <code class="xref py py-class docutils literal"><span class="pre">module_env</span></code> module environment</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">init_standard</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">env</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: init called, module id is </span><span class="si">%d</span><span class="s2"> port: </span><span class="si">%d</span><span class="s2"> script: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">env</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">port</span><span class="p">,</span> <span class="n">env</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">python_script</span><span class="p">))</span>
+   <span class="k">return</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<dl class="function">
+<dt id="deinit">
+<code class="descname">deinit</code><span class="sig-paren">(</span><em>id</em><span class="sig-paren">)</span><a class="headerlink" href="#deinit" title="Permalink to this definition">¶</a></dt>
+<dd><p>Deinitialize module internals.
+Called just once on module unload.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>id</strong> – module identifier (integer)</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">deinit</span><span class="p">(</span><span class="nb">id</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: deinit called, module id is </span><span class="si">%d</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="nb">id</span><span class="p">)</span>
+   <span class="k">return</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<dl class="function">
+<dt id="inform_super">
+<code class="descname">inform_super</code><span class="sig-paren">(</span><em>id</em>, <em>qstate</em>, <em>superqstate</em>, <em>qdata</em><span class="sig-paren">)</span><a class="headerlink" href="#inform_super" title="Permalink to this definition">¶</a></dt>
+<dd><p>Inform super querystate about the results from this subquerystate.
+Is called when the querystate is finished.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>id</strong> – module identifier (integer)</li>
+<li><strong>qstate</strong> – <a class="reference internal" href="../modules/struct.html#module_qstate" title="module_qstate"><code class="xref py py-class docutils literal"><span class="pre">module_qstate</span></code></a> Query state</li>
+<li><strong>superqstate</strong> – <a class="reference internal" href="../modules/struct.html#pythonmod_qstate" title="pythonmod_qstate"><code class="xref py py-class docutils literal"><span class="pre">pythonmod_qstate</span></code></a> Mesh state</li>
+<li><strong>qdata</strong> – <a class="reference internal" href="../modules/struct.html#query_info" title="query_info"><code class="xref py py-class docutils literal"><span class="pre">query_info</span></code></a> Query data</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">inform_super</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">superqstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span>
+   <span class="k">return</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<dl class="function">
+<dt id="operate">
+<code class="descname">operate</code><span class="sig-paren">(</span><em>id</em>, <em>event</em>, <em>qstate</em>, <em>qdata</em><span class="sig-paren">)</span><a class="headerlink" href="#operate" title="Permalink to this definition">¶</a></dt>
+<dd><p>Perform action on pending query. Accepts a new query, or work on pending query.</p>
+<p>You have to set qstate.ext_state on exit.
+The state informs unbound about result and controls the following states.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>id</strong> – module identifier (integer)</li>
+<li><strong>qstate</strong> – <a class="reference internal" href="../modules/struct.html#module_qstate" title="module_qstate"><code class="xref py py-class docutils literal"><span class="pre">module_qstate</span></code></a> query state structure</li>
+<li><strong>qdata</strong> – <a class="reference internal" href="../modules/struct.html#query_info" title="query_info"><code class="xref py py-class docutils literal"><span class="pre">query_info</span></code></a> per query data, here you can store your own data</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">operate</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: operate called, id: </span><span class="si">%d</span><span class="s2">, event:</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">strmodulevent</span><span class="p">(</span><span class="n">event</span><span class="p">)))</span>
+   <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_NEW</span><span class="p">:</span>
+      <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_WAIT_MODULE</span>
+      <span class="k">return</span> <span class="kc">True</span>
+
+   <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_MODDONE</span><span class="p">:</span>
+      <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_FINISHED</span>
+      <span class="k">return</span> <span class="kc">True</span>
+
+   <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_PASS</span><span class="p">:</span>
+      <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_WAIT_MODULE</span>
+      <span class="k">return</span> <span class="kc">True</span>
+
+   <span class="n">log_err</span><span class="p">(</span><span class="s2">&quot;pythonmod: BAD event&quot;</span><span class="p">)</span>
+   <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_ERROR</span>
+   <span class="k">return</span> <span class="kc">True</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="complete-source-code">
+<h2>Complete source code<a class="headerlink" href="#complete-source-code" title="Permalink to this headline">¶</a></h2>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">init</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">cfg</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: init called, module id is </span><span class="si">%d</span><span class="s2"> port: </span><span class="si">%d</span><span class="s2"> script: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">cfg</span><span class="o">.</span><span class="n">port</span><span class="p">,</span> <span class="n">cfg</span><span class="o">.</span><span class="n">python_script</span><span class="p">))</span>
+   <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">init_standard</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">env</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: init called, module id is </span><span class="si">%d</span><span class="s2"> port: </span><span class="si">%d</span><span class="s2"> script: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">env</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">port</span><span class="p">,</span> <span class="n">env</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">python_script</span><span class="p">))</span>
+   <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">deinit</span><span class="p">(</span><span class="nb">id</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: deinit called, module id is </span><span class="si">%d</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="nb">id</span><span class="p">)</span>
+   <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">inform_super</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">superqstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span>
+   <span class="k">return</span> <span class="bp">True</span>
+
+<span class="k">def</span> <span class="nf">operate</span><span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">event</span><span class="p">,</span> <span class="n">qstate</span><span class="p">,</span> <span class="n">qdata</span><span class="p">):</span>
+   <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: operate called, id: </span><span class="si">%d</span><span class="s2">, event:</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">id</span><span class="p">,</span> <span class="n">strmodulevent</span><span class="p">(</span><span class="n">event</span><span class="p">)))</span>
+
+   <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_NEW</span><span class="p">:</span>
+      <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_WAIT_MODULE</span> 
+      <span class="k">return</span> <span class="bp">True</span>
+
+   <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_MODDONE</span><span class="p">:</span>
+      <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: module we are waiting for is done&quot;</span><span class="p">)</span>
+      <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_FINISHED</span> 
+      <span class="k">return</span> <span class="bp">True</span>
+
+   <span class="k">if</span> <span class="n">event</span> <span class="o">==</span> <span class="n">MODULE_EVENT_PASS</span><span class="p">:</span>
+      <span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: event_pass&quot;</span><span class="p">)</span>
+      <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_WAIT_MODULE</span> 
+      <span class="k">return</span> <span class="bp">True</span>
+
+   <span class="n">log_err</span><span class="p">(</span><span class="s2">&quot;pythonmod: BAD event&quot;</span><span class="p">)</span>
+   <span class="n">qstate</span><span class="o">.</span><span class="n">ext_state</span><span class="p">[</span><span class="nb">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">MODULE_ERROR</span>
+   <span class="k">return</span> <span class="bp">True</span>
+
+<span class="n">log_info</span><span class="p">(</span><span class="s2">&quot;pythonmod: script loaded.&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>As you can see, the source code is much more flexible in contrast to C modules.
+Moreover, compulsory functions called on appropriate module events allows to handle almost
+anything from web control to query analysis.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="../index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Fundamentals</a><ul>
+<li><a class="reference internal" href="#how-to-enable-python-module">How to enable python module</a></li>
+<li><a class="reference internal" href="#simple-python-module-step-by-step">Simple python module step by step</a></li>
+<li><a class="reference internal" href="#complete-source-code">Complete source code</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="index.html"
+                        title="previous chapter">Examples</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="example1.html"
+                        title="next chapter">Packet logger</a></p>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="example1.html" title="Packet logger"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Examples"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" >Examples</a> &#187;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &#169; Copyright 2009, Zdenek Vasicek, Marek Vavrusa.
+      Last updated on Aug 05, 2019.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.6.7.
+    </div>
+  </body>
+</html>

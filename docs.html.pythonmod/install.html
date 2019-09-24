@@ -1,0 +1,170 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Installation &#8212; Unbound scriptable interface 1.0.0 documentation</title>
+    <link rel="stylesheet" href="_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '1.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  false,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Examples" href="examples/index.html" />
+    <link rel="prev" title="Unbound scriptable interface" href="index.html" /> 
+  </head>
+  <body>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="examples/index.html" title="Examples"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Unbound scriptable interface"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="installation">
+<h1>Installation<a class="headerlink" href="#installation" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this headline">¶</a></h2>
+<p>Python 2.4 or higher, SWIG 1.3 or higher, GNU make</p>
+</div>
+<div class="section" id="download">
+<h2>Download<a class="headerlink" href="#download" title="Permalink to this headline">¶</a></h2>
+<p>You can download the source codes <a class="reference external" href="unbound-1.1.1-py.tar.gz">here</a>.
+The latest release is 1.1.1, Jan 15, 2009.</p>
+</div>
+<div class="section" id="compiling">
+<h2>Compiling<a class="headerlink" href="#compiling" title="Permalink to this headline">¶</a></h2>
+<p>After downloading, you can compile the Unbound library by doing:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="o">&gt;</span> <span class="n">tar</span> <span class="o">-</span><span class="n">xzf</span> <span class="n">unbound</span><span class="o">-</span><span class="mf">1.1</span><span class="o">.</span><span class="mi">1</span><span class="o">-</span><span class="n">py</span><span class="o">.</span><span class="n">tar</span><span class="o">.</span><span class="n">gz</span>
+<span class="o">&gt;</span> <span class="n">cd</span> <span class="n">unbound</span><span class="o">-</span><span class="mf">1.1</span><span class="o">.</span><span class="mi">1</span>
+<span class="o">&gt;</span> <span class="o">./</span><span class="n">configure</span> <span class="o">--</span><span class="k">with</span><span class="o">-</span><span class="n">pythonmodule</span>
+<span class="o">&gt;</span> <span class="n">make</span>
+</pre></div>
+</div>
+<p>You need GNU make to compile sources.
+SWIG and Python devel libraries to compile extension module.</p>
+</div>
+<div class="section" id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Permalink to this headline">¶</a></h2>
+<p>If the compilation is successful, you can test the extension module by:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="o">&gt;</span> <span class="n">cd</span> <span class="n">pythonmod</span>
+<span class="o">&gt;</span> <span class="n">make</span> <span class="n">sudo</span> <span class="c1"># or &quot;make test&quot; or &quot;make suexec&quot;</span>
+</pre></div>
+</div>
+<p>This will start unbound server with language dictionary service
+(see <a class="reference internal" href="examples/index.html#tutorials"><span class="std std-ref">Examples</span></a>).
+In order to test this service, type:</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="o">&gt;</span> <span class="n">dig</span> <span class="n">TXT</span> <span class="nd">@127</span><span class="o">.</span><span class="mf">0.0</span><span class="o">.</span><span class="mi">1</span> <span class="n">aught</span><span class="o">.</span><span class="n">en</span><span class="o">.</span><span class="n">_dict_</span><span class="o">.</span><span class="n">cz</span>
+</pre></div>
+</div>
+<p>Dig should print this message (czech equivalent of aught):</p>
+<div class="highlight-default"><div class="highlight"><pre><span></span><span class="p">;</span> <span class="o">&lt;&lt;&gt;&gt;</span> <span class="n">DiG</span> <span class="mf">9.5</span><span class="o">.</span><span class="mi">0</span><span class="o">-</span><span class="n">P2</span> <span class="o">&lt;&lt;&gt;&gt;</span> <span class="n">TXT</span> <span class="nd">@127</span><span class="o">.</span><span class="mf">0.0</span><span class="o">.</span><span class="mi">1</span> <span class="n">aught</span><span class="o">.</span><span class="n">en</span><span class="o">.</span><span class="n">_dict_</span><span class="o">.</span><span class="n">cz</span>
+<span class="p">;</span> <span class="p">(</span><span class="mi">1</span> <span class="n">server</span> <span class="n">found</span><span class="p">)</span>
+<span class="p">;;</span> <span class="k">global</span> <span class="n">options</span><span class="p">:</span>  <span class="n">printcmd</span>
+<span class="p">;;</span> <span class="n">Got</span> <span class="n">answer</span><span class="p">:</span>
+<span class="p">;;</span> <span class="o">-&gt;&gt;</span><span class="n">HEADER</span><span class="o">&lt;&lt;-</span> <span class="n">opcode</span><span class="p">:</span> <span class="n">QUERY</span><span class="p">,</span> <span class="n">status</span><span class="p">:</span> <span class="n">NOERROR</span><span class="p">,</span> <span class="nb">id</span><span class="p">:</span> <span class="mi">30085</span>
+<span class="p">;;</span> <span class="n">flags</span><span class="p">:</span> <span class="n">aa</span> <span class="n">rd</span> <span class="n">ra</span><span class="p">;</span> <span class="n">QUERY</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="n">ANSWER</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="n">AUTHORITY</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="n">ADDITIONAL</span><span class="p">:</span> <span class="mi">0</span>
+
+<span class="p">;;</span> <span class="n">QUESTION</span> <span class="n">SECTION</span><span class="p">:</span>
+<span class="p">;</span><span class="n">aught</span><span class="o">.</span><span class="n">en</span><span class="o">.</span><span class="n">_dict_</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>     <span class="n">IN</span>  <span class="n">TXT</span>
+
+<span class="p">;;</span> <span class="n">ANSWER</span> <span class="n">SECTION</span><span class="p">:</span>
+<span class="n">aught</span><span class="o">.</span><span class="n">en</span><span class="o">.</span><span class="n">_dict_</span><span class="o">.</span><span class="n">cz</span><span class="o">.</span>  <span class="mi">300</span> <span class="n">IN</span>  <span class="n">TXT</span> <span class="s2">&quot;nic&quot;</span>
+
+<span class="p">;;</span> <span class="n">Query</span> <span class="n">time</span><span class="p">:</span> <span class="mi">11</span> <span class="n">msec</span>
+<span class="p">;;</span> <span class="n">SERVER</span><span class="p">:</span> <span class="mf">127.0</span><span class="o">.</span><span class="mf">0.1</span><span class="c1">#53(127.0.0.1)</span>
+<span class="p">;;</span> <span class="n">WHEN</span><span class="p">:</span> <span class="n">Thu</span> <span class="n">Jan</span> <span class="mi">10</span> <span class="mi">16</span><span class="p">:</span><span class="mi">45</span><span class="p">:</span><span class="mi">58</span> <span class="mi">2009</span>
+<span class="p">;;</span> <span class="n">MSG</span> <span class="n">SIZE</span>  <span class="n">rcvd</span><span class="p">:</span> <span class="mi">52</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal"><span class="pre">pythonmod/examples</span></code> directory contains simple applications written in
+Python.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Installation</a><ul>
+<li><a class="reference internal" href="#prerequisites">Prerequisites</a></li>
+<li><a class="reference internal" href="#download">Download</a></li>
+<li><a class="reference internal" href="#compiling">Compiling</a></li>
+<li><a class="reference internal" href="#testing">Testing</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="index.html"
+                        title="previous chapter">Unbound scriptable interface</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="examples/index.html"
+                        title="next chapter">Examples</a></p>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="examples/index.html" title="Examples"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Unbound scriptable interface"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">Unbound scriptable interface 1.0.0 documentation</a> &#187;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &#169; Copyright 2009, Zdenek Vasicek, Marek Vavrusa.
+      Last updated on Aug 05, 2019.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.6.7.
+    </div>
+  </body>
+</html>
