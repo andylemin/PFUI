@@ -23,15 +23,15 @@ from the local PF Tables.
 ### The Challenge;
 
 Traditional firewall setups allow nothing in and everything out by default.
-So many environments add DNS-Blacklists (DNSBLs) to internal DNS services to provide the filtering of 
+So many environments add DNS-Blacklists (DNS-BLs) to internal DNS services to provide the filtering of 
 outbound traffic.
 
-It is common to also block UDP ports 53 and 853 (DNS over TLS) outbound (excluding the internal DNS servers), 
-as a means of forcing clients to use the internal DNS (running DNSBLs), as well as minimising DNS based 
+It is common to also block UDP ports 53 and 853 ("DNS over TLS" (DoT)) outbound (excluding the internal DNS servers), 
+as a means of forcing clients to use the internal DNS (running DNS-BLs), as well as minimising DNS based 
 Data Exfiltration.
 
 However, since "DNS over HTTPS" (DoH) it is now no longer possible to separate DNS from HTTPS traffic, 
-to block all DNS and force the use of internal DNSBLs.
+to block all DNS and force the use of internal DNS-BLs.
 
 Additionally, since "Bring Your Own Device" (BYOD) (where devices have no central control) the use of 
 SSL-terminating web proxies with company certificate becomes difficult.
@@ -66,6 +66,7 @@ performance as DNS resolved IPs must be installed in the firewall before the cli
 
 - To ensure local firewall traffic can flow, install Unbound with PFUI_Client on every firewall running
 PFUI_Server, and configure /etc/resolv.conf on the firewall so all DNS queries flow through Unbound with PFUI.
+
 
 ------
 ### Docs;

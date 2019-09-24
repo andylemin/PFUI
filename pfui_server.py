@@ -17,8 +17,14 @@
     pfctl -t pfui_ipv4_domains -T [add|show|delete]
 
     The PF Table interface supports expiring old entries (pfctl -t pfui_ipv4_domains -T expire 3600), however
-    subsequent queries/updates do not refresh the timestamp. Therefore Redis is used to track all entries.
+    subsequent queries/updates do _not_ refresh the cleared timestamp. Therefore Redis used to track entries.
 """
+
+# TODO: Use the /dev/pf ioctl interface (https://man.openbsd.org/pf) for better performance;
+# ioctl calls to implement DIOCRADDADDRS, DIOCRGETADDRS, DIOCRDELADDRS
+# ioctl: https://man.openbsd.org/ioctl.2 https://docs.python.org/2/library/fcntl.html
+# Python-C structs: https://docs.python.org/2/library/struct.html
+# TODO: Change socket protocol to UDP for better performance
 
 import sys
 import logging

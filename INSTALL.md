@@ -2,7 +2,7 @@
 
 ### OpenBSD
 
-### Install Packages
+#### Install Packages
 ```
 pkg_add -i python3
 pkg_add -i python3-pip
@@ -29,17 +29,23 @@ cd  /tmp/unbound
 make && make install
 ```
 
-### TODO: Section for Unbound rc.d service
+#### TODO: Section for Unbound service
 
-### TODO: Section for Unbound config
+#### TODO: Section for Unbound config
 
 ### TODO: FreeBSD Section
+.
+
+### TODO: Linux Section
+.
 
 ---
 
 ## Installing PFUI_Server on PF Firewalls
 
-### Install Packages
+### OpenBSD
+
+#### Install Packages
 ```
 pkg_add -i python3
 pkg_add -i python3-pip
@@ -49,3 +55,16 @@ pkg_add -i redis
 rcctl enable redis
 rcctl restart redis
 ```
+
+#### Copy Files
+
+#### PFUI_Server service
+```
+rcctl enable pfui_server
+rcctl start pfui_server
+```
+
+### TODO: FreeBSD Section
+
+### TODO: PFSense Section
+

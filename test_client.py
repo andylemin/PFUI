@@ -4,9 +4,16 @@ import socket
 from yaml import safe_load
 from json import dumps
 
-TEST_MESSAGE = {'AF4': [{'ip': '204.79.197.212', 'ttl': 3600}, {'ip': '192.0.2.1', 'ttl': 100}], 'AF6': [{'ip': '2a00:77e0:1:2::1', 'ttl': 3600}]}
-# TEST_MESSAGE = {'AF4': [{'ip': '204.79.197.212', 'ttl': 3600}], 'AF6': [{'ip': '2a00:77e0:1:2::1', 'ttl': 3600}]}
-# {'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip_ttl }]}
+TEST_MESSAGE1 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}], 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+
+TEST_MESSAGE2 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}, {'ip': '192.0.2.1', 'ttl': 100}],
+                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+
+TEST_MESSAGE3 = {'AF4': [{'ip': '192.0.2.1', 'ttl': 3600},
+                        {'ip': '192.0.2.2', 'ttl': 100},
+                        {'ip': '192.0.2.3', 'ttl': 100}],
+                'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600},
+                        {'ip': '2001:DB8:1:2::1', 'ttl': 100}]}
 
 
 def log_info(message):
@@ -38,4 +45,4 @@ except Exception as e:
     print("YAML Config File not found or cannot load: " + str(e))
     exit(1)
 
-transmit(TEST_MESSAGE)
+transmit(TEST_MESSAGE3)

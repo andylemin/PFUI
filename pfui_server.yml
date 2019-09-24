@@ -1,6 +1,6 @@
 ---  # Yaml
 
-# PFUI Server (OpenBSD PF Firewall)
+# PFUI_Server Configuration (PF Firewall)
 
 DEBUG: True                  # Enable verbose logging
 LOG_LEVEL: DEBUG              # 'INFO' (testing), 'ERROR' (production)
