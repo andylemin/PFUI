@@ -1,0 +1,37 @@
+#!/bin/ksh
+#
+# $OpenBSD: unbound,v 1.5 2018/01/11 21:09:26 rpe Exp $
+
+daemon="/usr/local/sbin/pfui_server.py"
+#daemon_flags="-c /var/unbound/etc/unbound.conf"
+daemon_flags=""
+
+. /etc/rc.d/rc.subr
+
+pexp="python.* pfui_server.*"
+
+rc_start() {
+	$daemon start
+	sleep 3
+}
+
+rc_stop() {
+	$daemon stop
+	echo "Waiting for all threads to finish" && sleep 3
+}
+
+rc_restart() {
+	$daemon restart
+	sleep 5
+}
+
+rc_reload() {
+	$daemon reload
+	sleep 5
+}
+
+rc_check() {
+	$daemon check
+}
+
+rc_cmd $1

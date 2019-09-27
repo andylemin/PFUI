@@ -8,8 +8,8 @@ table <NonRoutable> const { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 240.0.0.0/4,
 # NB; 64:ff9b::/96 = SIIT address, also used with NAT64 (Entire IPv4 Space in last 32 bits) - Avoid v6 tunneling
 
 ## Dynamic Tables
-table <pfui_ipv4_domains> persist file "/var/spool/pfui_ipv4_domains"
-table <pfui_ipv6_domains> persist file "/var/spool/pfui_ipv4_domains"
+table <pfui_ipv4_domains> persist
+table <pfui_ipv6_domains> persist
 
 
 set skip on lo

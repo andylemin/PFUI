@@ -20,7 +20,7 @@
     subsequent queries/updates do _not_ refresh the cleared timestamp. Therefore Redis used to track entries.
 """
 
-# TODO: Use the /dev/pf ioctl interface (https://man.openbsd.org/pf) for better performance;
+# TODO: Use the /dev/pf ioctl interface (https://man.openbsd.org/pf) for better performance (pfctl takes ~30ms!);
 # ioctl calls to implement DIOCRADDADDRS, DIOCRGETADDRS, DIOCRDELADDRS
 # ioctl: https://man.openbsd.org/ioctl.2 https://docs.python.org/2/library/fcntl.html
 # Python-C structs: https://docs.python.org/2/library/struct.html
@@ -36,9 +36,18 @@ from json import loads
 from yaml import safe_load
 from redis import StrictRedis
 from datetime import datetime
-from logging.handlers import SysLogHandler
-from service import find_syslog, Service
 from threading import Thread, Event
+from service import find_syslog, Service
+from logging.handlers import SysLogHandler
+
+############ Pycharm Debug ############
+# import sys
+# sys.path.append("pydevd-pycharm.egg")
+# import pydevd_pycharm
+# pydevd_pycharm.settrace('192.168.174.1', port=12345, stdoutToServer=True, stderrToServer=True)
+#######################################
+
+CONFIG_LOCATION = "/etc/pfui_server.yml"
 
 
 class Scanner(Thread):
@@ -53,8 +62,9 @@ class Scanner(Thread):
         self.logger = logger
         self.table = table
         self.db = db
+        self.scan_redis_db()
         self.sync_pf_table()
-        self.logger.info("PFUI: [+] New background scanner thread started for {}".format(self.table))
+        self.logger.info("PFUI_S: [+] New background scanner thread started for {}".format(self.table))
 
     def join(self):
         self.stop_event.set()
@@ -65,43 +75,43 @@ class Scanner(Thread):
             pass
         try:
             while True:
-                self.scan_redis_db()
                 for _ in range(int(self.cfg['SCAN_PERIOD'])):
                     if self.stop_event.is_set():
                         raise Break
                     sleep(1)
+                self.scan_redis_db()
         except Break:
-            self.logger.info("PFUI: [-] Background scanner thread closing for {}".format(self.table))
+            self.logger.info("PFUI_S: [-] Background scanner thread closing for {}".format(self.table))
 
     def sync_pf_table(self):
-        self.logger.info("PFUI: Syncing PF Table {} to DB({})".format(self.table, str(self.cfg['REDIS_DB'])))
+        self.logger.info("PFUI_S: Syncing PF Table {} to DB({})".format(self.table, str(self.cfg['REDIS_DB'])))
         try:
             lines = list(subprocess.Popen(["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE).stdout)
             keys = self.db.keys(self.table + "*")
         except Exception as e:
             errno, errstr = e.args
-            self.logger.error("PFUI: Failed to read stores for {}. Error: {}".format(self.table, errstr))
+            self.logger.error("PFUI_S: Failed to read stores for {}. Error: {}".format(self.table, errstr))
 
         for line in lines:  # Remove orphaned IPs from pf_table (no Redis record)
             ip = line.decode('utf-8').strip()
             found = next((k for k in keys if k.decode('utf-8').split("^")[1] == ip), False)
             if not found:  # PF Table host not found in Redis DB
-                self.logger.info("PFUI: Purging orphaned IP {} from PF Table {}".format(ip, self.table))
+                self.logger.info("PFUI_S: Purging orphaned IP {} from PF Table {}".format(ip, self.table))
                 r = subprocess.run(["pfctl", "-t", self.table, "-T", "delete", ip])
                 if r.returncode != 0:
-                    self.logger.error("PFUI: Could not delete {} from table {}. {}".format(ip, self.table, str(r)))
+                    self.logger.error("PFUI_S: Could not delete {} from table {}. {}".format(ip, self.table, str(r)))
 
         for key in keys:  # Load missing IPs into pf_table (active Redis record)
             ip = key.decode('utf-8').split("^")[1]
             found = next((l for l in lines if l.decode('utf-8').strip() == ip), False)
             if not found:  # Redis Key not found in PF Table hosts
-                self.logger.info("PFUI: Installing missing IP {} into PF Table {}".format(ip, self.table))
+                self.logger.info("PFUI_S: Installing missing IP {} into PF Table {}".format(ip, self.table))
                 r = subprocess.run(["pfctl", "-t", self.table, "-T", "add", ip])
                 if r.returncode != 0:
-                    self.logger.error("PFUI: Failed to install {} into table {}. {}".format(ip, self.table, str(r)))
+                    self.logger.error("PFUI_S: Failed to install {} into table {}. {}".format(ip, self.table, str(r)))
 
     def scan_redis_db(self):
-        self.logger.info("PFUI: Scanning DB({}) for expiring {} entries.".format(str(self.cfg['REDIS_DB']), self.table))
+        self.logger.info("PFUI_S: Scanning DB({}) for expiring {} entries.".format(str(self.cfg['REDIS_DB']), self.table))
         keys = self.db.keys(self.table + "*")
         epoch = int(datetime.now().strftime('%s'))
         for key in keys:
@@ -113,15 +123,15 @@ class Scanner(Thread):
                 db_epoch, ttl = epoch, 0
             if db_epoch <= epoch - (ttl * self.cfg['TTL_MULTIPLIER']):
                 ip = key.decode('utf-8').split("^")[1]
-                self.logger.info("PFUI: Expiring IP {} from PF Table {}".format(str(ip), self.table))
+                self.logger.info("PFUI_S: Expiring IP {} from {}".format(str(ip), self.table))
                 r = subprocess.run(["pfctl", "-t", self.table, "-T", "delete", ip])
                 if r.returncode != 0:
-                    self.logger.error("PFUI: Could not delete IP from PF Table {}. {}".format(str(ip), str(r)))
+                    self.logger.error("PFUI_S: Could not delete IP from PF Table {}. {}".format(str(ip), str(r)))
                 else:
                     try:
                         self.db.delete(self.table + "^" + ip)
                     except Exception as e:
-                        self.logger.error("PFUI: Could not delete Key from Redis DB at {}. {}".format(str(ip), str(e)))
+                        self.logger.error("PFUI_S: Could not delete Key from Redis DB at {}. {}".format(str(ip), str(e)))
 
 
 class PFUIService(Service):
@@ -136,7 +146,7 @@ class PFUIService(Service):
         self.db = ''
 
         try:  # Load YAML Configuration
-            self.cfg = safe_load(open('pfui_server.yml'))
+            self.cfg = safe_load(open(CONFIG_LOCATION))
         except Exception as e:
             errno, errstr = e.args
             print("YAML Config File not found or cannot load. {}".format(errstr))
@@ -157,7 +167,7 @@ class PFUIService(Service):
                                   db=int(self.cfg['REDIS_DB']))
         except Exception as e:
             errno, errstr = e.args
-            self.logger.error("PFUI: Failed to connect to Redis DB. {}".format(errstr))
+            self.logger.error("PFUI_S: Failed to connect to Redis DB. {}".format(errstr))
             sys.exit(errno)
 
         try:  # Start background table scanning threads
@@ -168,20 +178,18 @@ class PFUIService(Service):
             self.threads.append(af4_thread)
             self.threads.append(af6_thread)
         except Exception as e:
-            errno, errstr = e.args
-            self.logger.error("PFUI: Scanning thread failed. {}".format(errstr))
-            sys.exit(errno)
+            self.logger.error("PFUI_S: Scanning thread failed. {}".format(str(e)))
+            sys.exit(1)
 
         if self.cfg['DEBUG']:
-            self.logger.info("PFUI: [+] PFUI_Server Service Started.")
+            self.logger.info("PFUI_S: [+] PFUI_Server Service Started.")
 
         self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.soc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-        self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, self.cfg['SOCKET_TIMEOUT'])
-        self.soc.settimeout(self.cfg['SOCKET_TIMEOUT'])  # accept() and recv() timeouts
+        self.soc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
+        self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)  # Fast Socket reuse
+        self.soc.settimeout(self.cfg['SOCKET_TIMEOUT'])  # accept() & recv() blocking timeouts
         self.soc.bind((self.cfg['SOCKET_LISTEN'], self.cfg['SOCKET_PORT']))
         self.soc.listen(self.cfg['SOCKET_BACKLOG'])
-        self.soc.settimeout(1)  # accept() and recv() timeout
         while not self.got_sigterm():  # Watch Socket
             try:
                 (conn, (ip, port)) = self.soc.accept()
@@ -189,7 +197,7 @@ class PFUIService(Service):
                     Thread(target=self.receiver, args=(conn, ip, port)).start()
                 except Exception as e:
                     errno, errstr = e.args
-                    self.logger.error("PFUI: Unexpected error starting thread: {}".format(errstr))
+                    self.logger.error("PFUI_S: Unexpected error starting thread: {}".format(errstr))
             except socket.timeout:
                 continue
 
@@ -198,7 +206,7 @@ class PFUIService(Service):
         self.db.close()
 
         if self.cfg['DEBUG']:
-            self.logger.info("PFUI: [-] PFUI_Server Service Stopped.")
+            self.logger.info("PFUI_S: [-] PFUI_Server Service Stopped.")
 
     def receiver(self, conn, ip, port):
         """ Receive all data, update PF Table, and update Redis DB entry.
@@ -207,20 +215,24 @@ class PFUIService(Service):
         Ensure SOCKET_BUFFER is small, but large enough for maximum expected record size. """
 
         chunks = []
+        if self.cfg['DEBUG']:
+            stime = datetime.now()
         while True:  # Receive all data
             try:
                 raw = conn.recv(self.cfg['SOCKET_BUFFER'])
-                if not raw:
+                if not raw:  # Client disconnected
                     break
             except socket.timeout:
                 break
             chunks.append(raw)
+        if self.cfg['DEBUG']:
+            ntime = datetime.now()
         conn.close()
         if len(chunks) > 1:
-            self.logger.info("PFUI: Increase SOCKET_BUFFER. Data did not fit into single segment.")
+            self.logger.info("PFUI_S: Increase SOCKET_BUFFER. Data did not fit into single segment.")
         data = loads(b"".join(chunks))
         if self.cfg['DEBUG']:
-            self.logger.info("PFUI: Received data: {} from {}:{}".format(str(data), str(ip), str(port)))
+            self.logger.info("PFUI_S: Received data: {} from {}:{}".format(str(data), str(ip), str(port)))
 
         # Update PF Tables
         af4_list = [rr['ip'] for rr in data['AF4'] if rr['ip']]
@@ -228,60 +240,103 @@ class PFUIService(Service):
             r4 = subprocess.run(["pfctl", "-t", self.cfg['AF4_TABLE'], "-T", "add"] + af4_list,
                                 stdout=subprocess.DEVNULL)
             if r4.returncode != 0:
-                self.logger.error("PFUI: Failed to install {} into {}. {}".format(str(af4_list),
+                self.logger.error("PFUI_S: Failed to install {} into {}. {}".format(str(af4_list),
                                                                                   self.cfg['AF4_TABLE'], str(r4)))
         af6_list = [rr['ip'] for rr in data['AF6'] if rr['ip']]
         if af6_list:
             r6 = subprocess.run(["pfctl", "-t", self.cfg['AF6_TABLE'], "-T", "add"] + af6_list,
                                 stdout=subprocess.DEVNULL)
             if r6.returncode != 0:
-                self.logger.error("PFUI: Failed to install {} into {}. {}".format(str(af6_list),
+                self.logger.error("PFUI_S: Failed to install {} into {}. {}".format(str(af6_list),
                                                                                   self.cfg['AF6_TABLE'], str(r6)))
+        if self.cfg['DEBUG']:
+            ptime = datetime.now()
+
         # Update Redis DB
         epoch = int(datetime.now().strftime('%s'))
         if r4.returncode == 0:
             for addr in data['AF4']:
                 if addr['ttl'] < epoch:  # TTL is real (new query)
-                    self.db.hmset(self.cfg['AF4_TABLE'] + "^" + addr['ip'], {'epoch': epoch, 'ttl': addr['ttl']})
+                    self.db.hmset(self.cfg['AF4_TABLE'] + "^" + addr['ip'].lower(),
+                                  {'epoch': epoch, 'ttl': addr['ttl']})
                 else:  # TTL is Unbound cache response (cache expiry epoch) - update timestamp only
-                    self.db.hmset(self.cfg['AF4_TABLE'] + "^" + addr['ip'], {'epoch': epoch})
+                    self.db.hmset(self.cfg['AF4_TABLE'] + "^" + addr['ip'].lower(),
+                                  {'epoch': epoch})
         if r6.returncode == 0:
             for addr in data['AF6']:
                 if addr['ttl'] < epoch:
-                    self.db.hmset(self.cfg['AF6_TABLE'] + "^" + addr['ip'], {'epoch': epoch, 'ttl': addr['ttl']})
+                    self.db.hmset(self.cfg['AF6_TABLE'] + "^" + addr['ip'].lower(),
+                                  {'epoch': epoch, 'ttl': addr['ttl']})
                 else:
-                    self.db.hmset(self.cfg['AF6_TABLE'] + "^" + addr['ip'], {'epoch': epoch})
+                    self.db.hmset(self.cfg['AF6_TABLE'] + "^" + addr['ip'].lower(),
+                                  {'epoch': epoch})
+        if self.cfg['DEBUG']:
+            etime = datetime.now()
+            tntime = ntime - stime
+            tptime = ptime - ntime
+            trtime = etime - ptime
+            ttime = etime - stime
+            self.logger.info("PFUI_S: Receive Latency {} secs and {} microsecs".format(str(int(tntime.seconds)),
+                                                                                     str(int(tntime.microseconds))))
+            self.logger.info("PFUI_S: PF Update Latency {} secs and {} microsecs".format(str(int(tptime.seconds)),
+                                                                                       str(int(tptime.microseconds))))
+            self.logger.info("PFUI_S: Redis Update Latency {} secs and {} microsecs".format(str(int(trtime.seconds)),
+                                                                                          str(int(trtime.microseconds))))
+            self.logger.info("PFUI_S: Total Update Latency {} secs and {} microsecs".format(str(int(ttime.seconds)),
+                                                                                          str(int(ttime.microseconds))))
 
 
 if __name__ == '__main__':
 
     if len(sys.argv) != 2:
-        sys.exit('Syntax: %s COMMAND' % sys.argv[0])
+        print('Syntax: {} {{start|stop|kill|restart|check}}'.format(sys.argv[0]))
+        exit(1)
 
     cmd = sys.argv[1].lower()
     service = PFUIService('pfui_server', pid_dir='/var/run')
 
     if cmd == 'start':
         if not service.is_running():
-            print("Service is starting.")
             service.start()
+        if service.is_running():
+            print("PFUI_Server started.")
+            exit(0)
+        else:
+            exit(1)
     elif cmd == 'stop':
         if service.is_running():
-            print("Service is stopping.")
             service.stop()
+        if not service.is_running():
+            print("PFUI_Server stopped.")
+            exit(0)
+        else:
+            exit(1)
     elif cmd == 'kill':
-        service.kill()
-    elif cmd == 'restart':
+        try:
+            service.kill()
+        except ValueError:
+            print("PFUI_Server is not running.")
+        if not service.is_running():
+            exit(0)
+        else:
+            exit(1)
+    elif cmd == 'restart' or cmd == 'reload':
         while service.is_running():
-            print("Service is stopping.")
+            print("PFUI_Server is stopping.")
             service.stop()
             sleep(1)
-        print("Service is starting.")
         service.start()
-    elif cmd == 'status':
         if service.is_running():
-            print("Service is running.")
+            print("PFUI_Server started.")
+            exit(0)
         else:
-            print("Service is not running.")
+            exit(1)
+    elif cmd == 'status' or cmd == 'check':
+        if service.is_running():
+            print("PFUI_Server is running.")
+            exit(0)
+        else:
+            print("PFUI_Server is not running.")
+            exit(1)
     else:
         sys.exit('Unknown command "%s".' % cmd)

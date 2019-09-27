@@ -56,6 +56,13 @@ PFUI Server - Supports OpenBSD and FreeBSD, and requires Python 3.
 
 
 ------
+### Known Issues;
+
+Unbound with PFUI Server - Does **not** currently support 'chroot' environments as the Python dependencies need to
+also reside in the jailed environment. Virtualenv planned for stable release. Disable chroot for Beta testing.
+
+
+------
 ### Recommendations;
 
 - It is recommended to configure the PF firewall to only allow connections on the pfui_server port

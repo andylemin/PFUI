@@ -2,14 +2,13 @@
 
 # PFUI_Server Configuration (PF Firewall)
 
-DEBUG: True                  # Enable verbose logging
+DEBUG: False                  # Enable verbose logging
 LOG_LEVEL: DEBUG              # 'INFO' (testing), 'ERROR' (production)
-LOG_FILE: "/var/log/messages"
 
 SOCKET_LISTEN: 0.0.0.0        # Interface to listen on (0.0.0.0 = All interfaces - not recommended)
 SOCKET_PORT: 10001            # Port to listen on (Permit inbound access to this port from PFUI_Clients)
 SOCKET_TIMEOUT: 1             # Timeout on Socket session between client and server (keep small as network allows)
-SOCKET_BUFFER: 256            # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
+SOCKET_BUFFER: 512            # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
 SOCKET_BACKLOG: 5             # How many client connections can be queued up waiting to be accepted
 
 REDIS_HOST: 127.0.0.1         # IP for Redis Server

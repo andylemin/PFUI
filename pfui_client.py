@@ -20,9 +20,11 @@ declared here and called by Unbound depending on EVENT type..
 
 import socket
 from sys import exit
-from time import time
 from json import dumps
 from yaml import safe_load
+from datetime import datetime
+
+CONFIG_LOCATION = "/var/unbound/etc/pfui_client.yml"
 
 
 def dataHex(data, prefix=""):
@@ -86,7 +88,7 @@ def logger(qstate):
 
 
 def read_rr(qstate=None, rep=None):
-    """ Inspects the RR Data, extracts IPs and TTLs, and populates data structure.
+    """ Inspects the RR response data, extracts IPs and TTLs, and populates PFUI data structure.
         Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip_ttl }]} """
 
     ipv4, ipv6 = [], []
@@ -98,7 +100,7 @@ def read_rr(qstate=None, rep=None):
         for i in range(0, r.rrset_count):
             rr = r.rrsets[i]
             if cfg['DEBUG']:
-                log_info("PFUI: r.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
+                log_info("PFUI_C: r.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
             if rr.rk.type_str == 'A':
                 d = rr.entry.data
                 for j in range(0, d.count+d.rrsig_count):
@@ -107,32 +109,31 @@ def read_rr(qstate=None, rep=None):
                         ip = socket.inet_ntop(socket.AF_INET, rr_ip)  # IP bytes to display format
                         ipv4.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
                         if cfg['DEBUG']:
-                            log_info("PFUI: Found IPv4 address {}".format(str(ipv4[-1])))
+                            log_info("PFUI_C: Found IPv4 address {}".format(str(ipv4[-1])))
                     except:
-                        log_err("PFUI: Invalid IPv4 address {}".format(str(ip)))
+                        log_err("PFUI_C: Invalid IPv4 address {}".format(str(ip)))
             elif rr.rk.type_str == 'AAAA':
                 d = rr.entry.data
                 for j in range(0, d.count+d.rrsig_count):
-                    rr_ip = d.rr_data[j][-16:]  # TODO: Test and verify
+                    rr_ip = d.rr_data[j][-16:]
                     try:
                         ip = socket.inet_ntop(socket.AF_INET6, rr_ip)
                         ipv6.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
                         if cfg['DEBUG']:
-                            log_info("PFUI: Found IPv6 address {}".format(str(ipv6[-1])))
+                            log_info("PFUI_C: Found IPv6 address {}".format(str(ipv6[-1])))
                     except:
-                        log_err("PFUI: Invalid IPv6 address {}".format(str(ip)))
-
-        if ipv4 or ipv6:
-            return {'AF4': ipv4, 'AF6': ipv6}
-        else:
-            return False
+                        log_err("PFUI_C: Invalid IPv6 address {}".format(str(ip)))
+    if ipv4 or ipv6:
+        return {'AF4': ipv4, 'AF6': ipv6}
+    else:
+        return False
 
 
 def transmit(ip_dict):
     """ Transmits IP and TTL data structure to PF Firewalls running pfui_server. """
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)        # Zero Buffer size (always send)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
@@ -140,15 +141,17 @@ def transmit(ip_dict):
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
                 if cfg['DEBUG']:
-                    log_info("PFUI: SENDING DATA: {} {}".format(str(type(ip_dict)), str(ip_dict)))
-                    start = int(round(time() * 1000))
+                    log_info("PFUI_C: SENDING DATA: {} {}".format(str(type(ip_dict)), str(ip_dict)))
+                    start = datetime.now()
                 s.connect((fw['HOST'], fw['PORT']))
                 s.sendall(dumps(ip_dict))
                 if cfg['DEBUG']:
-                    end = int(round(time() * 1000))
-                    log_info("PFUI: {} milliseconds".format(str(end - start)))
+                    end = datetime.now()
+                    diff = end - start
+                    log_info("PFUI_C: Network Latency {} secs and {} microsecs".format(str(int(diff.seconds)),
+                                                                                       str(int(diff.microseconds))))
             except Exception as e:
-                log_err("PFUI: Failed to send " + str(e))
+                log_err("PFUI_C: Failed to send " + str(e))
             s.close()
 
 
@@ -156,7 +159,7 @@ def inplace_cache_callback(qinfo, qstate, rep, rcode, edns, opt_list_out, region
     """ Inplace callback function for cache responses. """
 
     if cfg['DEBUG']:
-        log_info("PFUI: pythonmod: cache_callback called while answering from cache.")
+        log_info("PFUI_C: pythonmod: cache_callback called while answering from cache.")
     if rep:
         struct = read_rr(rep=rep)
     if struct:
@@ -166,9 +169,9 @@ def inplace_cache_callback(qinfo, qstate, rep, rcode, edns, opt_list_out, region
 
 def init(id, cfg):
     if cfg['DEBUG']:
-        log_info("PFUI: pythonmod: init called, module id {} port: {} script: {}".format(str(id),
-                                                                                          str(cfg.port),
-                                                                                          str(cfg.python_script)))
+        log_info("PFUI_C: pythonmod: init called, module id {} port: {} script: {}".format(str(id),
+                                                                                           str(cfg.port),
+                                                                                           str(cfg.python_script)))
     return True
 
 
@@ -177,9 +180,9 @@ def init_standard(id, env):
         (Iterator is not called for cache responses). """
 
     if cfg['DEBUG']:
-        log_info("PFUI: pythonmod: init_standard called, module id {} port: {} script: {}".format(str(id),
-                                                                                          str(cfg.port),
-                                                                                          str(cfg.python_script)))
+        log_info("PFUI_C: pythonmod: init_standard called, module id {} port: {} script: {}".format(str(id),
+                                                                                           str(env.cfg.port),
+                                                                                           str(env.cfg.python_script)))
     if not register_inplace_cb_reply_cache(inplace_cache_callback, env, id):
         return False
     return True
@@ -187,32 +190,37 @@ def init_standard(id, env):
 
 def deinit(id):
     if cfg['DEBUG']:
-        log_info("PFUI: pythonmod: deinit called, module id {}".format(str(id)))
+        log_info("PFUI_C: pythonmod: deinit called, module id {}".format(str(id)))
     return True
 
 
 def inform_super(id, qstate, superqstate, qdata):
     if cfg['DEBUG']:
-        log_info("PFUI: pythonmod: inform_super called, module is is {}. qstate is {}".format(str(id), str(qstate)))
+        log_info("PFUI_C: pythonmod: inform_super called, module is is {}. qstate is {}".format(str(id), str(qstate)))
     return True
 
 
 def operate(id, event, qstate, qdata):
-    """ When event == 'MODULE_EVENT_MODDONE' (Iterator finished) inspect RR response. """
+    """ Called when processing new (non-cached) queries. 'event' defines state-machine state.
+        PFUI is only invoked after a domain has been successfully resolved by the Iterator
+        and a valid RR exists (MODULE_EVENT_MODDONE). """
 
     if cfg['DEBUG']:
-        log_info("PFUI: pythonmod: operate called, id: {}, event:{}".format(str(id), str(strmodulevent(event))))
+        log_info("PFUI_C: pythonmod: operate called, id: {}, event:{}".format(str(id), str(strmodulevent(event))))
 
     if event == MODULE_EVENT_NEW:
         if cfg['DEBUG']:
-            log_info("PFUI: pythonmod: MODULE_EVENT_NEW")
+            log_info("PFUI_C: pythonmod: MODULE_EVENT_NEW")
         qstate.ext_state[id] = MODULE_WAIT_MODULE
         return True
 
     if event == MODULE_EVENT_MODDONE:
         if cfg['DEBUG'] and qstate:
-            log_info("PFUI: pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting response)")
-            logger(qstate)
+            log_info("PFUI_C: pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR response)")
+            if qstate.return_msg and qstate.return_msg.qinfo:
+                logger(qstate)
+            else:
+                log_err("PFUI_C: Incomplete RR data found.")
         if qstate.return_msg:
             struct = read_rr(qstate=qstate)
         if struct:
@@ -220,26 +228,26 @@ def operate(id, event, qstate, qdata):
 
         qstate.ext_state[id] = MODULE_FINISHED
         if cfg['DEBUG']:
-            log_info("PFUI: pythonmod: MODULE_FINISHED")
+            log_info("PFUI_C: pythonmod: MODULE_FINISHED")
         return True
 
     if event == MODULE_EVENT_PASS:
         if cfg['DEBUG']:
-            log_info("PFUI: pythonmod: MODULE_EVENT_PASS")
+            log_info("PFUI_C: pythonmod: MODULE_EVENT_PASS")
         qstate.ext_state[id] = MODULE_WAIT_MODULE
         return True
 
     if cfg['DEBUG']:
-        log_err("PFUI: pythonmod: MODULE_ERROR")
+        log_err("PFUI_C: pythonmod: MODULE_ERROR")
     qstate.ext_state[id] = MODULE_ERROR
     return True
 
 
 if __name__ == '__main__':
     try:
-        cfg = safe_load(open('pfui_client.yml'))
+        cfg = safe_load(open(CONFIG_LOCATION))
     except Exception as e:
-        log_err("PFUI: YAML Config File pfui_client.yml not found or cannot load: " + str(e))
+        log_err("PFUI_C: YAML Config File pfui_client.yml not found or cannot load: " + str(e))
         exit(1)
 
     log_info("Unbound pythonmod: script loaded.")
