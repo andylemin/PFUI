@@ -35,25 +35,27 @@ if [[ "$OS" = "OpenBSD" ]]; then
   rcctl start redis
 
   echo "Installing PFUI Firewall"
-  cp ./pfui_server.py /usr/local/sbin/pfui_server.py
-  chmod 755 /usr/local/sbin/pfui_server.py
+  cp -f ./pfui_firewall.py /usr/local/sbin/pfui_firewall.py
+  chmod 755 /usr/local/sbin/pfui_firewall.py
 
-  cp ./pfui_server.yml /etc/pfui_server.yml
-  chmod 644 /etc/pfui_server.yml
+  cp -f ./pfui_firewall.yml /etc/pfui_firewall.yml
+  chmod 644 /etc/pfui_firewall.yml
 
-  cp ./rc.d/pfui_server /etc/rc.d/pfui_server
-  chmod 555 /etc/rc.d/pfui_server
+  cp -f ./rc.d/pfui_firewall /etc/rc.d/pfui_firewall
+  chmod 555 /etc/rc.d/pfui_firewall
 
-  rcctl enable pfui_server
-  rcctl start pfui_server
+  rcctl enable pfui_firewall
+  rcctl restart pfui_firewall
 
   while [[ $PFCONF != "y" && $PFCONF != "n" ]]; do
     read -rp "Install example pf.conf rules? (Overwites any existing pf.conf) [y/n]: " -e PFCONF
   done
   if [[ "$PFCONF" == "y" ]]; then
-    cp ./examples/pf.conf.example /etc/pf.conf
+    cp -f ./examples/pf.conf.example /etc/pf.conf
     touch /var/spool/pfui_ipv4_domains
     touch /var/spool/pfui_ipv6_domains
+    chmod 666 /var/spool/pfui_ipv4_domains
+    chmod 666 /var/spool/pfui_ipv6_domains
   fi
 
 fi

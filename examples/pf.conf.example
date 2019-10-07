@@ -1,42 +1,38 @@
-#	$OpenBSD: pf.conf example - Modified for PFUI Server Example
+#	$OpenBSD: pf.conf - PFUI Server Example
 #   https://man.openbsd.org/pf.conf
 
 ## Static Tables
 table <rfc1918> const { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }
-table <NonRoutable> const { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 240.0.0.0/4, 255.255.255.255/32, 64:ff9b::/96 }
-# table <CorpServices> const { #list of Subnets for corporate services which do not use DNS# }  # E.g. VoIP, SaaS etc.
-# NB; 64:ff9b::/96 = SIIT address, also used with NAT64 (Entire IPv4 Space in last 32 bits) - Avoid v6 tunneling
+table <NonRoutable> const { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 240.0.0.0/4, 255.255.255.255/32 }
+
+# table <PFUI_Unbound> const { list of internal IPs for DNS servers running PFUI Unbound }
+# table <CorpServices> const { list of services services which do not use DNS }  # E.g. VoIP, SaaS etc
 
 ## Dynamic Tables
-table <pfui_ipv4_domains> persist
-table <pfui_ipv6_domains> persist
+table <pfui_ipv4_domains> persist file "/var/spool/pfui_ipv4_domains"
+table <pfui_ipv6_domains> persist file "/var/spool/pfui_ipv6_domains"
 
 
 set skip on lo
 
-block return	# Block stateless traffic
-# pass		    # Do not 'pass' by default - We are a Deny-by-Default firewall :)
+block drop no state  # No state for denied traffic, client might connect before PFUI table updated
 
-# filter rules and anchor for ftp-proxy(8)
-#anchor "ftp-proxy/*"
-#pass in quick inet proto tcp to port ftp divert-to 127.0.0.1 port 8021
+# Block traffic from/to non-public address space on public interface
+# block in quick on egress from <NonRoutable>
+# block out quick on egress to <NonRoutable>
 
-# By default, do not permit remote connections to X11
-block return in on ! lo0 proto tcp to port 6000:6010
+# Allow internal access into firewall
+pass in quick on !egress from <rfc1918> to any
 
-# Port build user does not need network
-block return out log proto {tcp udp} user _pbuild
+# Allow PFUI_Unbound servers to perform DNS lookups
+# pass out quick proto udp from <PFUI_Unbound> to any port { 53, 853 }
 
-# Block traffic to/from non-global address space on outside interface
-block in quick on egress from { <NonRoutable>, <rfc1918> }  # Assumes public IP on outside interface
-block out quick on egress to { <NonRoutable>, <rfc1918> }   # Assumes public IP on outside interface
+# Allow local DNS and NTP
+pass out quick proto udp from self to port { 53, 853 } user _unbound
+pass out quick proto { tcp, udp } from self to port 123 user _ntp
 
-
-pass in quick proto icmp to self
-pass in quick proto tcp to port 22
-
-#pass out quick on egress to <CorpServices>       # Static access to services which do no use DNS (Direct IP Connection)
+# Only allow traffic to PFUI addresses
 pass out quick on egress to <pfui_ipv4_domains>  # Dynamic access to DNS resolved IPs
 pass out quick on egress to <pfui_ipv6_domains>  # Dynamic access to DNS resolved IPs
-
+# pass out quick on egress to <CorpServices>       # Static access to services which do no use DNS (Direct IP Connection)
 

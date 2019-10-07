@@ -65,14 +65,14 @@ also reside in the jailed environment. Virtualenv planned for stable release. Di
 ------
 ### Recommendations;
 
-- It is recommended to configure the PF firewall to only allow connections on the pfui_server port
-from the Unbound DNS servers running the pfui_client (PFUI does not implement authentication or encryption for 
+- It is recommended to configure the PF firewall to only allow connections on the pfui_firewall port
+from the Unbound DNS servers running the pfui_unbound (PFUI does not implement authentication or encryption for 
 performance as DNS resolved IPs must be installed in the firewall before the client connects to those IPs).
 
 - It is recommended to not allow all TCP/UDP ports out by default. Only allow ports to known wanted applications.
 
-- To ensure local firewall traffic can flow, install Unbound with PFUI_Client on every firewall running
-PFUI_Server, and configure /etc/resolv.conf on the firewall so all DNS queries flow through Unbound with PFUI.
+- To ensure local firewall traffic can flow, install Unbound with PFUI_Unbound on every firewall running
+PFUI_Firewall, and configure /etc/resolv.conf on the firewall so all DNS queries flow through Unbound with PFUI.
 
 
 ------

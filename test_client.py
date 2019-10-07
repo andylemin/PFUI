@@ -18,13 +18,19 @@ TEST_MESSAGE3 = {'AF4': [{'ip': '192.0.2.1', 'ttl': 3600},
                  'AF6': [{'ip': '2001:db8:1:1::1', 'ttl': 3600},
                          {'ip': '2001:DB8:1:2::1', 'ttl': 100}]}
 
+TEST_MESSAGE4 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}],
+                 'AF6': []}
+
+TEST_MESSAGE6 = {'AF4': [],
+                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+
 
 def log_info(message):
     print(str(message))
 
 
 def transmit(ip_dict):
-    """ Test Transmit to PF Firewall running pfui_server listener. """
+    """ Test Transmit to PF Firewall running pfui_firewall listener. """
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Buffer size Zero
@@ -40,7 +46,7 @@ def transmit(ip_dict):
                 s.connect((fw['HOST'], fw['PORT']))
                 if cfg['DEBUG']:
                     ctime = datetime.now()
-                s.send(dumps(ip_dict))
+                s.sendall(dumps(ip_dict))
                 if cfg['DEBUG']:
                     etime = datetime.now()
                     tctime = ctime - stime
@@ -55,7 +61,7 @@ def transmit(ip_dict):
 
 
 try:
-    cfg = safe_load(open('pfui_client.yml'))
+    cfg = safe_load(open('pfui_unbound.yml'))
 except Exception as e:
     print("YAML Config File not found or cannot load: " + str(e))
     exit(1)

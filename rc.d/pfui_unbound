@@ -5,8 +5,8 @@
 # Modified version of built-in Unbound rc.d script for Unbound version with Python Module support
 
 daemon="/usr/local/sbin/unbound"
-daemon_flags="-c /var/unbound/etc/unbound_pfui.conf"
-#daemon_user="_unbound"  # TODO: run unbound_pfui with _unbound
+daemon_flags="-c /var/unbound/etc/pfui_unbound.conf"
+#daemon_user="_unbound"  # TODO: run pfui_unbound with _unbound
 
 . /etc/rc.d/rc.subr
 
@@ -14,15 +14,15 @@ pexp="/usr/local/sbin/unbound ${daemon_flags}"
 
 rc_pre() {
 	if grep '^[[:space:]]*auto-trust-anchor-file:' \
-            /var/unbound/etc/unbound_pfui.conf > /dev/null 2>&1; then
+            /var/unbound/etc/pfui_unbound.conf > /dev/null 2>&1; then
 		/usr/local/sbin/unbound-anchor -v || true
 	fi
 }
 
 rc_start() {
-	/usr/local/sbin/unbound-checkconf /var/unbound/etc/unbound_pfui.conf
+	/usr/local/sbin/unbound-checkconf /var/unbound/etc/pfui_unbound.conf
 	echo ${rcexec}
-	/usr/local/sbin/unbound-checkconf /var/unbound/etc/unbound_pfui.conf > /dev/null &&
+	/usr/local/sbin/unbound-checkconf /var/unbound/etc/pfui_unbound.conf > /dev/null &&
 	    ${rcexec} "/usr/local/sbin/unbound ${daemon_flags}"
 }
 

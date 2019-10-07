@@ -52,11 +52,11 @@ make && make install
 ```
 
 #### TODO: Copy in all PFUI Client files (/var/unbound/etc/)
-chmod 755 ./pfui_server.py
+chmod 755 ./pfui_firewall.py
 chmod 755 ./update_root_servers.sh
 chmod 755 ./update_filtered_domains.sh
 
-chmod 555 /etc/rc.d/unbound_pfui
+chmod 555 /etc/rc.d/pfui_unbound
 
 chmod 755 ./update_root_servers.sh
 chmod 755 ./update_filtered_domains.sh 
@@ -73,8 +73,8 @@ python3 -m pip install -r ./requirements.txt
 ./update_filtered_domains.sh  
 
 ```
-rcctl enable unbound_pfui
-rcctl start unbound_pfui
+rcctl enable pfui_unbound
+rcctl start pfui_unbound
 ```
 
 ### TODO: FreeBSD Section
@@ -87,7 +87,7 @@ rcctl start unbound_pfui
 
 ---
 
-## Installing "PFUI_Server" on PF Firewalls
+## Installing "PFUI_Firewall" on PF Firewalls
 
 ### OpenBSD
 
@@ -110,16 +110,16 @@ rcctl restart redis
 
 #### Copy Files (/etc/ & /usr/local/sbin/)
 ```
-cp ./pfui_server.py /usr/local/sbin/pfui_server.py
-chmod 755 /usr/local/sbin/pfui_server.py
-cp ./pfui_server.yml /etc/pfui_server.yml
-chmod 644 /etc/pfui_server.yml 
+cp ./pfui_firewall.py /usr/local/sbin/pfui_firewall.py
+chmod 755 /usr/local/sbin/pfui_firewall.py
+cp ./pfui_firewall.yml /etc/pfui_firewall.yml
+chmod 644 /etc/pfui_firewall.yml 
 ```
 
-#### Enable PFUI_Server service
+#### Enable PFUI_Firewall service
 ```
-rcctl enable pfui_server
-rcctl start pfui_server
+rcctl enable pfui_firewall
+rcctl start pfui_firewall
 ```
 
 

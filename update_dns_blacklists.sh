@@ -16,7 +16,7 @@
 #    include: /var/unbound/etc/adware_malware.conf
 
 ## DNS-BL Examples using Steven Blacks Hosts - https://github.com/StevenBlack/hosts
-logger -p daemon.info -t update_filtered_domains.sh "Downloading StevenBlack Hosts (DNS-BL)"
+logger -p daemon.info -t update_filtered_domains.sh "Downloading StevenBlack Hosts (Community DNS-Blacklists)"
 
 ## "Unified hosts" (adware + malware) + "fakenews"
 #curl https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews/hosts -o /tmp/amf
@@ -47,4 +47,4 @@ cat /tmp/amfg | grep '^0\.0\.0\.0' | awk '{print "local-zone: \""$2"\" redirect\
 #> /var/unbound/etc/adware_malware_fakenews_gambling_social
 
 logger -p daemon.info -t update_filtered_domains.sh "Restarting Unbound to apply DNS-BL updates"
-rcctl restart unbound_pfui
+rcctl restart pfui_unbound

@@ -24,15 +24,15 @@ from json import dumps
 from yaml import safe_load
 from datetime import datetime
 
-CONFIG_LOCATION = "/var/unbound/etc/pfui_client.yml"
+CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
 
 
-def dataHex(data, prefix=""):
+def data_to_hex(data, prefix=""):
     """ Converts binary string data to display form.
         Function taken from Unbound source examples. """
 
     res = ""
-    for i in range(0, (len(data)+15)/16):
+    for i in range(int((len(data)+15)/16)):
         res += "%s0x%02X | " % (prefix, i*16)
         d = map(lambda x: ord(x), data[i*16:i*16+17])
         for ch in d:
@@ -65,21 +65,20 @@ def logger(qstate):
                                                                           str(q.qtype_str), str(q.qclass_str)))
     if r:
         print("Reply:")
-        for i in range(0, r.rrset_count):
+        for i in range(r.rrset_count):
             rr = r.rrsets[i]
             rk = rr.rk
             print(i, ":", rk.dname_list, rk.dname_str, "flags: {}".format(str(rk.flags)))
             print("type:{} ({}) class: {} ({})".format(str(rk.type_str), str(socket.ntohs(rk.type)),
                                                        str(rk.rrset_class_str), str(socket.ntohs(rk.rrset_class))))
-
             d = rr.entry.data
-            for j in range(0, d.count+d.rrsig_count):
+            for j in range(d.count+d.rrsig_count):
                 print("")
                 print("   {} : TTL= {}").format(str(j), str(d.rr_ttl[j]))
                 if j >= d.count:
                     print("rrsig")
                 print("")
-                print("HEX:  {}".format(dataHex(d.rr_data[j])))
+                print("HEX:  {}".format(data_to_hex(d.rr_data[j])))
                 if rk.type_str == 'A':
                     print("IPv4: {}".format(str(socket.inet_ntop(socket.AF_INET, d.rr_data[j][-4:]))))
                 if rk.type_str == 'AAAA':
@@ -87,23 +86,19 @@ def logger(qstate):
     print("-"*100)
 
 
-def read_rr(qstate=None, rep=None):
+def read_rr(rep=None):
     """ Inspects the RR response data, extracts IPs and TTLs, and populates PFUI data structure.
         Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip_ttl }]} """
 
     ipv4, ipv6 = [], []
-    try:
-        r = qstate.return_msg.rep
-    except:
-        r = rep
-    if r:
-        for i in range(0, r.rrset_count):
-            rr = r.rrsets[i]
+    if rep:
+        for i in range(rep.rrset_count):
+            rr = rep.rrsets[i]
             if cfg['DEBUG']:
-                log_info("PFUI_C: r.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
+                log_info("PFUI_C: rep.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
             if rr.rk.type_str == 'A':
                 d = rr.entry.data
-                for j in range(0, d.count+d.rrsig_count):
+                for j in range(d.count + d.rrsig_count):
                     rr_ip = d.rr_data[j][-4:]  # Last four bytes contain the IPv4 address
                     try:
                         ip = socket.inet_ntop(socket.AF_INET, rr_ip)  # IP bytes to display format
@@ -114,8 +109,8 @@ def read_rr(qstate=None, rep=None):
                         log_err("PFUI_C: Invalid IPv4 address {}".format(str(ip)))
             elif rr.rk.type_str == 'AAAA':
                 d = rr.entry.data
-                for j in range(0, d.count+d.rrsig_count):
-                    rr_ip = d.rr_data[j][-16:]
+                for j in range(d.count + d.rrsig_count):
+                    rr_ip = d.rr_data[j][-16:]  # Last 16 contain IPv6 address
                     try:
                         ip = socket.inet_ntop(socket.AF_INET6, rr_ip)
                         ipv6.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
@@ -130,36 +125,40 @@ def read_rr(qstate=None, rep=None):
 
 
 def transmit(ip_dict):
-    """ Transmits IP and TTL data structure to PF Firewalls running pfui_server. """
+    """ Transmits IP and TTL data structure to PF Firewalls running pfui_firewall. """
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
+    s.settimeout(cfg['SOCKET_TIMEOUT'])  # accept() & recv() blocking timeouts
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
             if not fw['PORT']:
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
                 if cfg['DEBUG']:
-                    log_info("PFUI_C: SENDING DATA: {} {}".format(str(type(ip_dict)), str(ip_dict)))
+                    log_info("PFUI_C: Sending: {} {}".format(str(type(ip_dict)), str(ip_dict)))
                     start = datetime.now()
                 s.connect((fw['HOST'], fw['PORT']))
                 s.sendall(dumps(ip_dict))
+                r = s.recv(3)  # Wait for ACK to confirm PF rules updated
                 if cfg['DEBUG']:
                     end = datetime.now()
                     diff = end - start
-                    log_info("PFUI_C: Network Latency {} secs and {} microsecs".format(str(int(diff.seconds)),
+                    log_info("PFUI_C: Reply {}".format(r.decode()))
+                    log_info("PFUI_C: Update Latency {} secs and {} microsecs".format(str(int(diff.seconds)),
                                                                                        str(int(diff.microseconds))))
             except Exception as e:
                 log_err("PFUI_C: Failed to send " + str(e))
-            s.close()
+            finally:
+                s.close()
 
 
 def inplace_cache_callback(qinfo, qstate, rep, rcode, edns, opt_list_out, region, **kwargs):
     """ Inplace callback function for cache responses. """
-
     if cfg['DEBUG']:
         log_info("PFUI_C: pythonmod: cache_callback called while answering from cache.")
+    struct = None
     if rep:
         struct = read_rr(rep=rep)
     if struct:
@@ -215,17 +214,19 @@ def operate(id, event, qstate, qdata):
         return True
 
     if event == MODULE_EVENT_MODDONE:
+        struct = None
         if cfg['DEBUG'] and qstate:
-            log_info("PFUI_C: pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR response)")
-            if qstate.return_msg and qstate.return_msg.qinfo:
-                logger(qstate)
+            log_info("PFUI_C: pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR)")
+            if qstate.return_msg:
+                if qstate.return_msg.qinfo:
+                    logger(qstate)
             else:
                 log_err("PFUI_C: Incomplete RR data found.")
         if qstate.return_msg:
-            struct = read_rr(qstate=qstate)
+            if qstate.return_msg.rep:
+                struct = read_rr(rep=qstate.return_msg.rep)
         if struct:
             transmit(struct)
-
         qstate.ext_state[id] = MODULE_FINISHED
         if cfg['DEBUG']:
             log_info("PFUI_C: pythonmod: MODULE_FINISHED")
@@ -247,7 +248,7 @@ if __name__ == '__main__':
     try:
         cfg = safe_load(open(CONFIG_LOCATION))
     except Exception as e:
-        log_err("PFUI_C: YAML Config File pfui_client.yml not found or cannot load: " + str(e))
+        log_err("PFUI_C: YAML Config File pfui_unbound.yml not found or cannot load: " + str(e))
         exit(1)
 
     log_info("Unbound pythonmod: script loaded.")
