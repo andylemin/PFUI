@@ -1,7 +1,7 @@
 #!/usr/bin/env ksh
 
 # Bogon Filters (DNS Rebinding);
-## Unbound can filter rfc1918 addresses from global domains, so no need for "bogons" filters
+## Unbound can filter rfc1918 addresses from global domains directly, so no need for 'bogons' in blacklists
 ## Set 'private-address:' in unbound.conf
 #    private-address: 192.168.0.0/16
 #    private-address: 172.16.0.0/12
@@ -13,10 +13,11 @@
 # DNS-Blacklist Filters
 ## Unbound can filter blacklisted domains
 ## Set 'include:' in unbound.conf
-#    include: /var/unbound/etc/adware_malware.conf
+#    include: /var/unbound/etc/dns_blacklist
 
 ## DNS-BL Examples using Steven Blacks Hosts - https://github.com/StevenBlack/hosts
 logger -p daemon.info -t update_filtered_domains.sh "Downloading StevenBlack Hosts (Community DNS-Blacklists)"
+
 
 ## "Unified hosts" (adware + malware) + "fakenews"
 #curl https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews/hosts -o /tmp/amf
@@ -36,15 +37,16 @@ fi
 #    curl http://sbc.io/hosts/alternates/fakenews-gambling-social/hosts -o /tmp/amfgs
 #fi
 
+
 ## Convert Host List format to Unbound format
 #cat /tmp/amf | grep '^0\.0\.0\.0' | awk '{print "local-zone: \""$2"\" redirect\nlocal-data: \""$2" A 0.0.0.0\""}' \
-#> /var/unbound/etc/adware_malware_fakenews
+#> /var/unbound/etc/dns_blacklist
 
 cat /tmp/amfg | grep '^0\.0\.0\.0' | awk '{print "local-zone: \""$2"\" redirect\nlocal-data: \""$2" A 0.0.0.0\""}' \
-> /var/unbound/etc/adware_malware_fakenews_gambling
+> /var/unbound/etc/dns_blacklist
 
 #cat /tmp/amfgs | grep '^0\.0\.0\.0' | awk '{print "local-zone: \""$2"\" redirect\nlocal-data: \""$2" A 0.0.0.0\""}' \
-#> /var/unbound/etc/adware_malware_fakenews_gambling_social
+#> /var/unbound/etc/dns_blacklist
 
 logger -p daemon.info -t update_filtered_domains.sh "Restarting Unbound to apply DNS-BL updates"
 rcctl restart pfui_unbound

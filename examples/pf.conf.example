@@ -5,8 +5,8 @@
 table <rfc1918> const { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }
 table <NonRoutable> const { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 240.0.0.0/4, 255.255.255.255/32 }
 
-# table <PFUI_Unbound> const { list of internal IPs for DNS servers running PFUI Unbound }
-# table <CorpServices> const { list of services services which do not use DNS }  # E.g. VoIP, SaaS etc
+# table <PFUI_Unbound> const { list of internal DNS servers running PFUI Unbound }
+# table <CorpServices> const { list of business services which do not use DNS }  # E.g. VoIP, SaaS etc
 
 ## Dynamic Tables
 table <pfui_ipv4_domains> persist file "/var/spool/pfui_ipv4_domains"
@@ -15,24 +15,32 @@ table <pfui_ipv6_domains> persist file "/var/spool/pfui_ipv6_domains"
 
 set skip on lo
 
-block drop no state  # No state for denied traffic, client might connect before PFUI table updated
+# PFUI Blocking mode (recommended); PFUI_Unbound Blocks replies to internal clients until PF tables updated.
+block drop log all
+
+# PFUI Non-Blocking mode (BLOCKING: False); Do not create state for denied traffic.
+#block drop log all no state
+# Client could connect before PFUI tables updated (race-condition).
 
 # Block traffic from/to non-public address space on public interface
 # block in quick on egress from <NonRoutable>
 # block out quick on egress to <NonRoutable>
 
-# Allow internal access into firewall
-pass in quick on !egress from <rfc1918> to any
 
-# Allow PFUI_Unbound servers to perform DNS lookups
-# pass out quick proto udp from <PFUI_Unbound> to any port { 53, 853 }
+# Allow internal access to firewall
+pass in quick proto tcp from <rfc1918> to self port 22
 
-# Allow local DNS and NTP
-pass out quick proto udp from self to port { 53, 853 } user _unbound
-pass out quick proto { tcp, udp } from self to port 123 user _ntp
+# Allow Internal PFUI_Unbound servers to perform DNS lookups
+# pass quick proto { tcp, udp } from <PFUI_Unbound> to any port { 53, 443, 853 }
 
-# Only allow traffic to PFUI addresses
+# Allow local PFUI_Unbound daemon and NTP daemon
+pass out quick proto { tcp, udp } from self to port { 53, 443, 853 } user _unbound
+pass out quick proto { tcp, udp } from self to port { 123 } user _ntp
+
+# Allow access to services which do no use DNS domains (Direct IP Connection services - VoIP, SaaS etc)
+# pass out quick on egress to <CorpServices>
+
+# Allow all other traffic only to IP addresses provided by DNS queries
 pass out quick on egress to <pfui_ipv4_domains>  # Dynamic access to DNS resolved IPs
 pass out quick on egress to <pfui_ipv6_domains>  # Dynamic access to DNS resolved IPs
-# pass out quick on egress to <CorpServices>       # Static access to services which do no use DNS (Direct IP Connection)
 

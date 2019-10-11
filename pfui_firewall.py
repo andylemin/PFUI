@@ -19,12 +19,11 @@
     The PF Table interface supports expiring old entries (pfctl -t pfui_ipv4_domains -T expire 3600), however
     subsequent queries/updates do _not_ refresh the cleared timestamp. Therefore Redis used to track entries.
 """
-
-# TODO: Use the /dev/pf ioctl interface (https://man.openbsd.org/pf) for better performance (pfctl takes ~30ms!);
+# TODO: Use the /dev/pf ioctl interface (https://man.openbsd.org/pf) for better performance (pfctl takes ~10-30ms!);
 # ioctl calls to implement DIOCRADDADDRS, DIOCRGETADDRS, DIOCRDELADDRS
 # ioctl: https://man.openbsd.org/ioctl.2 https://docs.python.org/2/library/fcntl.html
 # Python-C structs: https://docs.python.org/2/library/struct.html
-# TODO: Change socket protocol to UDP for better performance
+# TODO: Change socket protocol to UDP for (slightly) better performance
 
 import sys
 import socket
@@ -51,53 +50,51 @@ from logging.handlers import SysLogHandler
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
 
-
-
 def db_push(logger, db, table: str, epoch: int, ip: str, ttl: int = 0):
-    logger.info("PFUI: Installing {} into Redis DB".format(ip, db))
+    logger.info("PFUIFW: Installing {} into Redis DB".format(ip, db))
     try:
         if ttl:
             db.hmset(table + "^" + ip, {'epoch': epoch, 'ttl': ttl})
         else:
             db.hmset(table + "^" + ip, {'epoch': epoch})
     except Exception as e:
-        logger.error("PFUI: Failed to install {} into Redis DB. {}".format(ip, str(e)))
+        logger.error("PFUIFW: Failed to install {} into Redis DB. {}".format(ip, str(e)))
 
 
 def db_pop(logger, db, table: str, ip: str):
-    logger.info("PFUI: Clearing {} from Redis DB".format(ip, db))
+    logger.info("PFUIFW: Clearing {} from Redis DB".format(ip, db))
     try:
         db.delete(table + "^" + ip)
     except Exception as e:
-        logger.error("PFUI: Failed to delete {} from Redis DB. {}".format(ip, str(e)))
+        logger.error("PFUIFW: Failed to delete {} from Redis DB. {}".format(ip, str(e)))
 
 
 def table_push(logger, table: str, ip_list: list):
-    logger.info("PFUI: Installing {} into {}".format(str(ip_list), table))
+    logger.info("PFUIFW: Installing {} into {}".format(str(ip_list), table))
     try:
         r = subprocess.run(["pfctl", "-t", table, "-T", "add"] + ip_list, stdout=subprocess.DEVNULL)
         if r.returncode != 0:
             raise Exception()
         return r
     except:
-        logger.error("PFUI: Failed to install {} into {}. {}".format(str(ip_list), table, str(r)))
+        logger.error("PFUIFW: Failed to install {} into {}. {}".format(str(ip_list), table, str(r)))
         return False
 
 
 def table_pop(logger, table: str, ip: str):
-    logger.info("PFUI: Clearing {} from {}".format(ip, table))
+    logger.info("PFUIFW: Clearing {} from {}".format(ip, table))
     try:
         r = subprocess.run(["pfctl", "-t", table, "-T", "delete", ip], stdout=subprocess.DEVNULL)
         if r.returncode != 0:
             raise Exception()
         return r
     except:
-        logger.error("PFUI: Failed to clear {} from {}. {}".format(str(ip), table, str(r)))
+        logger.error("PFUIFW: Failed to clear {} from {}. {}".format(str(ip), table, str(r)))
         return False
 
 
 def file_push(logger, line: str, file: str, mode: str = "r+"):
-    logger.info("PFUI: Installing {} into {}".format(line, file))
+    logger.info("PFUIFW: Installing {} into {}".format(line, file))
     try:
         with open(file, mode) as f:
             for l in f:
@@ -107,12 +104,12 @@ def file_push(logger, line: str, file: str, mode: str = "r+"):
                 f.write(line + "\n")  # append missing data
         return True
     except Exception as e:
-        logger.error("PFUI: Failed to add IP {} to file {}. {}".format(line, file, str(e)))
+        logger.error("PFUIFW: Failed to add IP {} to file {}. {}".format(line, file, str(e)))
         return False
 
 
 def file_pop(logger, line: str, file: str):
-    logger.info("PFUI: Clearing {} from {}".format(line, file))
+    logger.info("PFUIFW: Clearing {} from {}".format(line, file))
     try:
         for l in fileinput.input(file, inplace=1):  # Backup file, and redirect stdout to new file
             if line in l:
@@ -121,7 +118,7 @@ def file_pop(logger, line: str, file: str):
                 sys.stdout.write(l)
         return True
     except Exception as e:
-        logger.error("PFUI: Failed to remove IP {} from file {}. {}".format(line, file, str(e)))
+        logger.error("PFUIFW: Failed to remove IP {} from file {}. {}".format(line, file, str(e)))
         return False
 
 
@@ -138,7 +135,7 @@ class ScanSync(Thread):
         self.db = db
         self.table = table
         self.file = file
-        self.logger.info("PFUI: [+] New background synchronisation thread started for {}".format(self.table))
+        self.logger.info("PFUIFW: [+] New background synchronisation thread started for {}".format(self.table))
 
     def join(self):
         self.stop_event.set()
@@ -157,10 +154,10 @@ class ScanSync(Thread):
                         raise Break
                     sleep(1)
         except Break:
-            self.logger.info("PFUI: [-] Background synchronisation thread closing for {}".format(self.table))
+            self.logger.info("PFUIFW: [-] Background synchronisation thread closing for {}".format(self.table))
 
     def scan_redis_db(self):
-        self.logger.info("PFUI: Scanning DB({}) for expiring {} IPs.".format(str(self.cfg['REDIS_DB']), self.table))
+        self.logger.info("PFUIFW: Scanning DB({}) for expiring {} IPs.".format(str(self.cfg['REDIS_DB']), self.table))
         keys = self.db.keys(self.table + "*")
         epoch = int(datetime.now().strftime('%s'))
         for key in keys:
@@ -172,18 +169,18 @@ class ScanSync(Thread):
                 db_epoch, ttl = epoch, 0
             if db_epoch <= epoch - (ttl * self.cfg['TTL_MULTIPLIER']):
                 ip = key.decode('utf-8').split("^")[1]
-                self.logger.info("PFUI: TTL Expired for IP {}".format(ip))
+                self.logger.info("PFUIFW: TTL Expired for IP {}".format(ip))
                 db_pop(self.logger, self.db, self.table, ip)
 
     def sync_pf_table(self):
-        self.logger.info("PFUI: Syncing PF Table {} with DB({})".format(self.table, str(self.cfg['REDIS_DB'])))
+        self.logger.info("PFUIFW: Syncing PF Table {} with DB({})".format(self.table, str(self.cfg['REDIS_DB'])))
         try:
             keys = self.db.keys(self.table + "*")
             db_ips = [k.decode('utf-8').split("^")[1] for k in keys]
             lines = list(subprocess.Popen(["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE).stdout)
             t_ips = [l.decode('utf-8').strip() for l in lines]
         except Exception as e:
-            self.logger.error("PFUI: Failed to read stores for {}. Error: {}".format(self.table, str(e)))
+            self.logger.error("PFUIFW: Failed to read stores for {}. Error: {}".format(self.table, str(e)))
 
         for t_ip in t_ips:  # Remove orphaned IPs from pf_table (no Redis record)
             found = next((db_ip for db_ip in db_ips if db_ip == t_ip), False)
@@ -196,7 +193,7 @@ class ScanSync(Thread):
                 table_push(self.logger, self.table, [db_ip])
 
     def sync_pf_file(self):
-        self.logger.info("PFUI: Syncing PF File {} with DB({})".format(self.table, str(self.cfg['REDIS_DB'])))
+        self.logger.info("PFUIFW: Syncing PF File {} with DB({})".format(self.table, str(self.cfg['REDIS_DB'])))
         try:
             keys = self.db.keys(self.table + "*")
             db_ips = [k.decode('utf-8').split("^")[1] for k in keys]
@@ -204,7 +201,7 @@ class ScanSync(Thread):
                 content = f.readlines()
             f_ips = [x.strip() for x in content if x != "\n" or ""]
         except Exception as e:
-            self.logger.error("PFUI: Failed to read stores for {}. Error: {}".format(self.file, str(e)))
+            self.logger.error("PFUIFW: Failed to read stores for {}. Error: {}".format(self.file, str(e)))
 
         for f_ip in f_ips:  # Remove orphaned IPs from pf_file (no Redis record)
             found = next((db_ip for db_ip in db_ips if db_ip == f_ip), False)
@@ -218,7 +215,7 @@ class ScanSync(Thread):
 
 
 class PFUI_Firewall(Service):
-    """ Main PFUI Server Service Class. """
+    """ Main PFUI Firewall Service Class. """
 
     def __init__(self, *args, **kwargs):
         """ Load Yaml configuration and Init logger """
@@ -250,7 +247,7 @@ class PFUI_Firewall(Service):
                                   db=int(self.cfg['REDIS_DB']))
         except Exception as e:
             errno, errstr = e.args
-            self.logger.error("PFUI: Failed to connect to Redis DB. {}".format(errstr))
+            self.logger.error("PFUIFW: Failed to connect to Redis DB. {}".format(errstr))
             sys.exit(errno)
 
         try:  # Start background scan and synchronisation threads
@@ -261,11 +258,11 @@ class PFUI_Firewall(Service):
             self.threads.append(af4_thread)
             self.threads.append(af6_thread)
         except Exception as e:
-            self.logger.error("PFUI: Scanning thread failed. {}".format(str(e)))
+            self.logger.error("PFUIFW: Scanning thread failed. {}".format(str(e)))
             sys.exit(1)
 
         if self.cfg['LOGGING']:
-            self.logger.info("PFUI: [+] PFUI_Firewall Service Started.")
+            self.logger.info("PFUIFW: [+] PFUI_Firewall Service Started.")
 
         self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.soc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
@@ -281,7 +278,7 @@ class PFUI_Firewall(Service):
                     Thread(target=self.receiver, args=(conn, ip, port)).start()
                 except Exception as e:
                     errno, errstr = e.args
-                    self.logger.error("PFUI: Unexpected error starting thread: {}".format(errstr))
+                    self.logger.error("PFUIFW: Unexpected error starting thread: {}".format(errstr))
             except socket.timeout:
                 continue
 
@@ -290,7 +287,7 @@ class PFUI_Firewall(Service):
         self.db.close()
 
         if self.cfg['LOGGING']:
-            self.logger.info("PFUI: [-] PFUI_Firewall Service Stopped.")
+            self.logger.info("PFUIFW: [-] PFUI_Firewall Service Stopped.")
 
     def receiver(self, conn, ip, port):
         """ Receive all data, update PF Table, and update Redis DB entry.
@@ -314,14 +311,14 @@ class PFUI_Firewall(Service):
         # conn.close()
         # data = loads(b"".join(chunks))
         # if len(chunks) > 1:
-        #     self.logger.error("PFUI: Increase SOCKET_BUFFER. Data did not fit into single segment.")
+        #     self.logger.error("PFUIFW: Increase SOCKET_BUFFER. Data did not fit into single segment.")
 
-        r = conn.recv(1024)
+        r = conn.recv(1024)  # TODO Testing client blocking
         data = loads(r)
 
         if self.cfg['LOGGING']:
             ntime = datetime.now()
-            self.logger.info("PFUI: Received: {} from {}:{}".format(str(data), str(ip), str(port)))
+            self.logger.info("PFUIFW: Received: {} from {}:{}".format(str(data), str(ip), str(port)))
 
         # Update PF Tables
         af4_list = [rr['ip'] for rr in data['AF4'] if rr['ip']]
@@ -330,8 +327,11 @@ class PFUI_Firewall(Service):
         af6_list = [rr['ip'].lower() for rr in data['AF6'] if rr['ip']]
         if af6_list:
             r6 = table_push(self.logger, self.cfg['AF6_TABLE'], af6_list)
-
-        conn.sendall("ACK".encode())
+        try:
+            conn.sendall("ACK".encode())
+        except:
+            # TODO: Need to trap correct assert
+            pass  # PFUI_Unbound may have already disconnected (non-blocking mode)
         conn.close()
         if self.cfg['LOGGING']:
             ptime = datetime.now()
@@ -369,15 +369,15 @@ class PFUI_Firewall(Service):
             trtime = rtime - ptime  # Total Redis Time
             tftime = etime - rtime  # Total File Time
             ttime = etime - stime   # Total Time
-            self.logger.info("PFUI: Network Latency {} secs and {} microsecs".format(str(int(tntime.seconds)),
+            self.logger.info("PFUIFW: Network Latency {} secs and {} microsecs".format(str(int(tntime.seconds)),
                                                                                      str(int(tntime.microseconds))))
-            self.logger.info("PFUI: PF Table Latency {} secs and {} microsecs".format(str(int(tptime.seconds)),
+            self.logger.info("PFUIFW: PF Table Latency {} secs and {} microsecs".format(str(int(tptime.seconds)),
                                                                                       str(int(tptime.microseconds))))
-            self.logger.info("PFUI: Redis Latency {} secs and {} microsecs".format(str(int(trtime.seconds)),
+            self.logger.info("PFUIFW: Redis Latency {} secs and {} microsecs".format(str(int(trtime.seconds)),
                                                                                    str(int(trtime.microseconds))))
-            self.logger.info("PFUI: File Latency {} secs and {} microsecs".format(str(int(tftime.seconds)),
+            self.logger.info("PFUIFW: File Latency {} secs and {} microsecs".format(str(int(tftime.seconds)),
                                                                                   str(int(tftime.microseconds))))
-            self.logger.info("PFUI: Total Latency {} secs and {} microsecs".format(str(int(ttime.seconds)),
+            self.logger.info("PFUIFW: Total Latency {} secs and {} microsecs".format(str(int(ttime.seconds)),
                                                                                    str(int(ttime.microseconds))))
 
 

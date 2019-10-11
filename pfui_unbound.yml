@@ -2,9 +2,11 @@
 
 # PFUI_Unbound Configuration (Unbound DNS Server)
 
-DEBUG: True         # Enable verbose logging - Requires daemon mode (unbound -dv) to view RR debug
+DEBUG: True          # Enable verbose logging - Requires daemon mode (unbound -dv) to view RR debug
 
-SOCKET_TIMEOUT: 1    # Timeout on Socket session between client and server
+SOCKET_TIMEOUT: 2    # Timeout on Socket session between client and server
+
+BLOCKING: True       # PFUI by default blocks returning DNS responses to internal clients, until PFUI Firewall updated.
 
 DEFAULT_PORT: 10001  # Default port where PFUI Server is listening
 FIREWALLS:           # List of Firewall Hosts targeting OpenBSD PF Firewalls running PFUI Server

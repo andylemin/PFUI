@@ -10,8 +10,9 @@ declared here and called by Unbound depending on EVENT type..
 :param qstate: module qstate. None;
 :param rep: reply_info struct;
 :param rcode: return code for the query;
-:param edns: edns_data sent from client side. List with EDNS options is accessible through edns.opt_list. Do not alter;
+:param edns: edns_data sent from client. List with EDNS options is accessible through edns.opt_list. Do not alter;
 :param opt_list_out: List with the EDNS options that will be sent as reply. It can be populated with EDNS options;
+:param region: region to allocate temporary data. Used when we want to append a new option to opt_list_out.
 :param region: region to allocate temporary data. Used when we want to append a new option to opt_list_out.
 :param qdata: ??
 :param superqstate: ??
@@ -95,7 +96,7 @@ def read_rr(rep=None):
         for i in range(rep.rrset_count):
             rr = rep.rrsets[i]
             if cfg['DEBUG']:
-                log_info("PFUI_C: rep.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
+                log_info("PFUIDNS: rep.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
             if rr.rk.type_str == 'A':
                 d = rr.entry.data
                 for j in range(d.count + d.rrsig_count):
@@ -104,9 +105,9 @@ def read_rr(rep=None):
                         ip = socket.inet_ntop(socket.AF_INET, rr_ip)  # IP bytes to display format
                         ipv4.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
                         if cfg['DEBUG']:
-                            log_info("PFUI_C: Found IPv4 address {}".format(str(ipv4[-1])))
+                            log_info("PFUIDNS: Found IPv4 address {}".format(str(ipv4[-1])))
                     except:
-                        log_err("PFUI_C: Invalid IPv4 address {}".format(str(ip)))
+                        log_err("PFUIDNS: Invalid IPv4 address {}".format(str(ip)))
             elif rr.rk.type_str == 'AAAA':
                 d = rr.entry.data
                 for j in range(d.count + d.rrsig_count):
@@ -115,9 +116,9 @@ def read_rr(rep=None):
                         ip = socket.inet_ntop(socket.AF_INET6, rr_ip)
                         ipv6.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
                         if cfg['DEBUG']:
-                            log_info("PFUI_C: Found IPv6 address {}".format(str(ipv6[-1])))
+                            log_info("PFUIDNS: Found IPv6 address {}".format(str(ipv6[-1])))
                     except:
-                        log_err("PFUI_C: Invalid IPv6 address {}".format(str(ip)))
+                        log_err("PFUIDNS: Invalid IPv6 address {}".format(str(ip)))
     if ipv4 or ipv6:
         return {'AF4': ipv4, 'AF6': ipv6}
     else:
@@ -130,72 +131,70 @@ def transmit(ip_dict):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
     s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
-    s.settimeout(cfg['SOCKET_TIMEOUT'])  # accept() & recv() blocking timeouts
+    s.settimeout(cfg['SOCKET_TIMEOUT'])
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
             if not fw['PORT']:
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
                 if cfg['DEBUG']:
-                    log_info("PFUI_C: Sending: {} {}".format(str(type(ip_dict)), str(ip_dict)))
+                    log_info("PFUIDNS: Sending: {} {}".format(str(type(ip_dict)), str(ip_dict)))
                     start = datetime.now()
-                s.connect((fw['HOST'], fw['PORT']))
-                s.sendall(dumps(ip_dict))
-                r = s.recv(3)  # Wait for ACK to confirm PF rules updated
+                try:
+                    s.connect((fw['HOST'], fw['PORT']))
+                    s.sendall(dumps(ip_dict))
+                    if cfg['BLOCKING']:
+                        _ = s.recv(3)  # Wait for ACK to confirm PF rules updated. TODO Verify is ACK/NACK
+                    else:
+                        s.close()
+                except socket.timeout:
+                    log_err("PFUIDNS: Timeout sending to firewall!")  # TODO Need retries for 'blocking' mode
                 if cfg['DEBUG']:
                     end = datetime.now()
                     diff = end - start
-                    log_info("PFUI_C: Reply {}".format(r.decode()))
-                    log_info("PFUI_C: Update Latency {} secs and {} microsecs".format(str(int(diff.seconds)),
-                                                                                       str(int(diff.microseconds))))
+                    log_info("PFUIDNS: Latency {} secs & {} microsecs. \
+                             Unblocking client".format(str(int(diff.seconds)),
+                                                       str(int(diff.microseconds))))
             except Exception as e:
-                log_err("PFUI_C: Failed to send " + str(e))
+                log_err("PFUIDNS: Failed to send " + str(e))
             finally:
                 s.close()
 
 
 def inplace_cache_callback(qinfo, qstate, rep, rcode, edns, opt_list_out, region, **kwargs):
     """ Inplace callback function for cache responses. """
-    if cfg['DEBUG']:
-        log_info("PFUI_C: pythonmod: cache_callback called while answering from cache.")
+    # log_info("pythonmod: cache_callback called - answering from cache.")
     struct = None
     if rep:
-        struct = read_rr(rep=rep)
+        struct = read_rr(rep)
     if struct:
         transmit(struct)
     return True
 
 
 def init(id, cfg):
-    if cfg['DEBUG']:
-        log_info("PFUI_C: pythonmod: init called, module id {} port: {} script: {}".format(str(id),
-                                                                                           str(cfg.port),
-                                                                                           str(cfg.python_script)))
+    # log_info("pythonmod: init, id {}, port: {}, script: {}".format(str(id), str(cfg.port), str(cfg.python_script)))
     return True
 
 
 def init_standard(id, env):
     """ Register inplace_cache_callback() as the callback function for inspecting cache responses.
         (Iterator is not called for cache responses). """
+    # log_info("pythonmod: init_standard, id {}, port: {}, script: {}".format(str(id),
+    # str(env.cfg.port), str(env.cfg.python_script)))
 
-    if cfg['DEBUG']:
-        log_info("PFUI_C: pythonmod: init_standard called, module id {} port: {} script: {}".format(str(id),
-                                                                                           str(env.cfg.port),
-                                                                                           str(env.cfg.python_script)))
     if not register_inplace_cb_reply_cache(inplace_cache_callback, env, id):
         return False
     return True
 
 
 def deinit(id):
-    if cfg['DEBUG']:
-        log_info("PFUI_C: pythonmod: deinit called, module id {}".format(str(id)))
+    # log_info("pythonmod: deinit, id {}".format(str(id)))
     return True
 
 
 def inform_super(id, qstate, superqstate, qdata):
-    if cfg['DEBUG']:
-        log_info("PFUI_C: pythonmod: inform_super called, module is is {}. qstate is {}".format(str(id), str(qstate)))
+    # log_info("pythonmod: inform_super, id {}, qstate {}".format(str(id), str(qstate)))
     return True
 
 
@@ -203,43 +202,33 @@ def operate(id, event, qstate, qdata):
     """ Called when processing new (non-cached) queries. 'event' defines state-machine state.
         PFUI is only invoked after a domain has been successfully resolved by the Iterator
         and a valid RR exists (MODULE_EVENT_MODDONE). """
-
-    if cfg['DEBUG']:
-        log_info("PFUI_C: pythonmod: operate called, id: {}, event:{}".format(str(id), str(strmodulevent(event))))
+    # log_info("pythonmod: operate, id: {}, event {}".format(str(id), str(strmodulevent(event))))
 
     if event == MODULE_EVENT_NEW:
-        if cfg['DEBUG']:
-            log_info("PFUI_C: pythonmod: MODULE_EVENT_NEW")
+        # log_info("pythonmod: MODULE_EVENT_NEW")
         qstate.ext_state[id] = MODULE_WAIT_MODULE
         return True
 
     if event == MODULE_EVENT_MODDONE:
+        # log_info("pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR)")
         struct = None
-        if cfg['DEBUG'] and qstate:
-            log_info("PFUI_C: pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR)")
-            if qstate.return_msg:
-                if qstate.return_msg.qinfo:
-                    logger(qstate)
-            else:
-                log_err("PFUI_C: Incomplete RR data found.")
+        if cfg['DEBUG'] and qstate.return_msg:
+            if qstate.return_msg.qinfo:
+                logger(qstate)
         if qstate.return_msg:
             if qstate.return_msg.rep:
-                struct = read_rr(rep=qstate.return_msg.rep)
+                struct = read_rr(qstate.return_msg.rep)
         if struct:
             transmit(struct)
         qstate.ext_state[id] = MODULE_FINISHED
-        if cfg['DEBUG']:
-            log_info("PFUI_C: pythonmod: MODULE_FINISHED")
         return True
 
     if event == MODULE_EVENT_PASS:
-        if cfg['DEBUG']:
-            log_info("PFUI_C: pythonmod: MODULE_EVENT_PASS")
+        # log_info("pythonmod: MODULE_EVENT_PASS")
         qstate.ext_state[id] = MODULE_WAIT_MODULE
         return True
 
-    if cfg['DEBUG']:
-        log_err("PFUI_C: pythonmod: MODULE_ERROR")
+    log_err("pythonmod: MODULE_ERROR. id {}, event {}, qstate {}".format(str(id), str(event), str(qstate)))
     qstate.ext_state[id] = MODULE_ERROR
     return True
 
@@ -248,7 +237,9 @@ if __name__ == '__main__':
     try:
         cfg = safe_load(open(CONFIG_LOCATION))
     except Exception as e:
-        log_err("PFUI_C: YAML Config File pfui_unbound.yml not found or cannot load: " + str(e))
+        log_err("PFUIDNS: YAML Config File pfui_unbound.yml not found or cannot load: " + str(e))
         exit(1)
 
-    log_info("Unbound pythonmod: script loaded.")
+    log_info("PFUIDNS python module for Unbound loaded.")
+
+
