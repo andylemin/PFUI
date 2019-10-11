@@ -1,4 +1,5 @@
-#	$OpenBSD: pf.conf - PFUI Server Example
+#	$OpenBSD: pf.conf - PFUI_Firewall Example
+#   Andy Lemin
 #   https://man.openbsd.org/pf.conf
 
 ## Static Tables
@@ -20,7 +21,7 @@ block drop log all
 
 # PFUI Non-Blocking mode (BLOCKING: False); Do not create state for denied traffic.
 #block drop log all no state
-# Client could connect before PFUI tables updated (race-condition).
+# Client might connect to IP before PFUI Tables are updated with IP (race-condition).
 
 # Block traffic from/to non-public address space on public interface
 # block in quick on egress from <NonRoutable>

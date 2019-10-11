@@ -3,17 +3,15 @@
 # PFUI_Unbound Configuration (Unbound DNS Server)
 
 DEBUG: True          # Enable verbose logging - Requires daemon mode (unbound -dv) to view RR debug
+SOCKET_TIMEOUT: 2    # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall
+BLOCKING: True       # PFUI by default blocks DNS responses (recommended), until PFUI Firewall updated.
 
-SOCKET_TIMEOUT: 2    # Timeout on Socket session between client and server
-
-BLOCKING: True       # PFUI by default blocks returning DNS responses to internal clients, until PFUI Firewall updated.
-
-DEFAULT_PORT: 10001  # Default port where PFUI Server is listening
-FIREWALLS:           # List of Firewall Hosts targeting OpenBSD PF Firewalls running PFUI Server
+DEFAULT_PORT: 10001  # Default port where PFUI_Firewall is listening
+FIREWALLS:           # List of Firewall Hosts targeting OpenBSD PF Firewalls running PFUI_Firewall
   - HOST: 127.0.0.1  # IP of first PF Firewall running PFUI_Firewall
-    PORT: 10001      # Port for first PFUI server running on PF Firewall
+    PORT: 10001      # Port for first PFUI_Firewall running on PF Firewall
 #  - HOST:            # IP of second PF Firewall running PFUI_Firewall
-#    PORT:            # Port for second PFUI server running on PF Firewall
+#    PORT:            # Port for second PFUI_Firewall running on PF Firewall
 
 # When operating PF Firewall Clusters using CARP, both firewall members should be updated as PF Table data is
 # not synced by PF-Sync  # TODO Verify this ??

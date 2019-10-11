@@ -1,5 +1,5 @@
 
-## Installing PFUI Client and Unbound DNS (with Python Module support)
+## Installing PFUI_Unbound and Unbound (with Python Module support)
 
 ### OpenBSD
 
@@ -51,7 +51,7 @@ make && make install
 
 ```
 
-#### TODO: Copy in all PFUI Client files (/var/unbound/etc/)
+#### TODO: Copy in all PFUI_Unbound files (/var/unbound/etc/)
 chmod 755 ./pfui_firewall.py
 chmod 755 ./update_root_servers.sh
 chmod 755 ./update_filtered_domains.sh
@@ -61,7 +61,7 @@ chmod 555 /etc/rc.d/pfui_unbound
 chmod 755 ./update_root_servers.sh
 chmod 755 ./update_filtered_domains.sh 
 
-#### TODO: PFUI Client Dependencies
+#### TODO: PFUI_Unbound Dependencies
 python3 -m pip install -r ./requirements.txt
 
 #### TODO: Section for Unbound service

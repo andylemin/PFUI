@@ -152,9 +152,9 @@ def transmit(ip_dict):
                 if cfg['DEBUG']:
                     end = datetime.now()
                     diff = end - start
-                    log_info("PFUIDNS: Latency {} secs & {} microsecs. \
-                             Unblocking client".format(str(int(diff.seconds)),
-                                                       str(int(diff.microseconds))))
+                    log_info("PFUIDNS: Total Latency {} secs & {} microsecs. \
+                             Unblocking query..".format(str(int(diff.seconds)),
+                                                        str(int(diff.microseconds))))
             except Exception as e:
                 log_err("PFUIDNS: Failed to send " + str(e))
             finally:

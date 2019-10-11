@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Builds Unbound with Python module support, and adds PFUI Client
+# Builds Unbound with Python module support, and adds PFUI_Unbound
 #
 
 # Set TARGET to the unbound etc directory

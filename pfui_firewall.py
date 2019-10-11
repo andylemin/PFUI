@@ -239,7 +239,7 @@ class PFUI_Firewall(Service):
             self.logger.setLevel(logging.ERROR)
 
     def run(self):
-        """ Connect to Redis, start sync threads, and watch socket (spawn Receiver thread for each client). """
+        """ Connect to Redis, start sync threads, and watch socket (spawn Receiver each session)  (PFUI_Unbound)). """
 
         try:  # Connect to Redis DB
             self.db = StrictRedis(host=str(self.cfg['REDIS_HOST']),

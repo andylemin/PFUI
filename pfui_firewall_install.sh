@@ -3,6 +3,9 @@
 # Installs PFUI Firewall
 #
 
+args=("$@")
+SETPFCONF=${args[0]}
+
 if [[ $(id -u) -ne 0 ]]; then
   echo "Please run as root user"
   exit 1
@@ -47,10 +50,10 @@ if [[ "$OS" = "OpenBSD" ]]; then
   rcctl enable pfui_firewall
   rcctl restart pfui_firewall
 
-  while [[ $PFCONF != "y" && $PFCONF != "n" ]]; do
-    read -rp "Install example pf.conf rules? (Overwites any existing pf.conf) [y/n]: " -e PFCONF
+  while [[ $SETPFCONF != "y" && $SETPFCONF != "n" ]]; do
+    read -rp "Install example pf.conf rules? (Overwites any existing pf.conf) [y/n]: " -e SETPFCONF
   done
-  if [[ "$PFCONF" == "y" ]]; then
+  if [[ "$SETPFCONF" == "y" ]]; then
     cp -f ./examples/pf.conf.example /etc/pf.conf
     touch /var/spool/pfui_ipv4_domains
     touch /var/spool/pfui_ipv6_domains

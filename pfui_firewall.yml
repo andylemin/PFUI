@@ -7,9 +7,9 @@ LOG_LEVEL: DEBUG              # 'DEBUG', 'INFO' (testing), 'ERROR' (production)
 
 SOCKET_LISTEN: 0.0.0.0        # Interface to listen on (0.0.0.0 = All interfaces - not recommended)
 SOCKET_PORT: 10001            # Port to listen on (Permit inbound access to this port from PFUI_Unbound instances)
-SOCKET_TIMEOUT: 2             # Timeout on Socket session between client and server (keep small as network allows)
+SOCKET_TIMEOUT: 2             # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall (keep small)
 SOCKET_BUFFER: 512            # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
-SOCKET_BACKLOG: 5             # How many client connections can be queued up waiting to be accepted
+SOCKET_BACKLOG: 5             # How many network connections can be queued up waiting to be accepted
 
 REDIS_HOST: 127.0.0.1         # IP for Redis Server
 REDIS_PORT: 6379              # Port for Redis Server
