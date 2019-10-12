@@ -31,7 +31,7 @@ if [[ "$OS" = "OpenBSD" ]]; then
   pkg_add -i python%3
   pkg_add -i py3-setuptools
   pkg_add -i py3-pip
-  python3 -m pip install -r ./requirements_firewall.txt
+  python3 -m pip install redis pyyaml service
 
   pkg_add -i redis
   rcctl enable redis
