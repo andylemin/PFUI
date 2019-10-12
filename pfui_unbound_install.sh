@@ -32,8 +32,8 @@ if [[ "$OS" = "OpenBSD" ]]; then
   pkg_add -i python%3
   pkg_add -i py3-setuptools
   pkg_add -i py3-pip
-  python -m pip install -r ./requirements_unbound.txt
-  python3 -m pip install -r ./requirements_unbound.txt
+  python -m pip install pyyaml
+  python3 -m pip install pyyaml
 
   pkg_add -i swig
   pkg_add -i git
