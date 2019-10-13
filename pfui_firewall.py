@@ -25,6 +25,7 @@
 # Python-C structs: https://docs.python.org/2/library/struct.html
 # TODO: Change socket protocol to UDP for (slightly) better performance
 
+import ast
 import sys
 import socket
 import logging
@@ -134,7 +135,8 @@ def file_pop(logger, log, line: str, file: str):
 
 class ScanSync(Thread):
     """ scan_redis_db: Expires IPs with last update epoch/timestamp older than (TTL * TTL_MULTIPLIER).
-        sync_pf_table: Removes orphaned IPs (no DB entry) from the PF Table, and adds missing IPs to the PF Table. """
+        sync_pf_table: Removes orphaned IPs (no DB entry) from the PF Table, and adds missing IPs to the PF Table.
+        sync_pf_file: Removes orphaned IPs (no DB entry) from the PF File, and adds missing IPs to the PF File. """
 
     def __init__(self, logger, cfg, db, table, file):
         Thread.__init__(self)
@@ -313,7 +315,9 @@ class PFUI_Firewall(Service):
             stime = datetime.now()
 
         chunks = []
-        stream, data = "", ""
+        stream = b""
+        data = dict()
+
         while True:
             try:
                 payload = conn.recv(int(self.cfg['SOCKET_BUFFER']))
@@ -323,6 +327,8 @@ class PFUI_Firewall(Service):
                     if stream[-3:] == b"EOT":
                         try:
                             data = loads(stream[:-3])
+                            if isinstance(data, str):
+                                data = ast.literal_eval(data)
                             break
                         except Exception as e:
                             self.logger.error(
@@ -348,7 +354,7 @@ class PFUI_Firewall(Service):
             r6 = table_push(self.logger, self.cfg['LOGGING'], self.cfg['AF6_TABLE'], af6_list)
         try:
             conn.sendall(b"ACK")
-        except:  # TODO: Need to trap correct assert
+        except:  # TODO: Trap correct assert
             pass  # PFUI_Unbound may have already disconnected (non-blocking mode)
         conn.close()
 
@@ -356,6 +362,7 @@ class PFUI_Firewall(Service):
             ptime = datetime.now()
 
         # Update Redis DB - TODO Need to add try: and retry logic as we have installed in PF Table first..
+        # TODO Add handling for state where no 'real-ttl' record exists (db missed resolver, only cache answers)
         epoch = int(datetime.now().strftime('%s'))
         if af4_list and r4.returncode == 0:
             for addr in data['AF4']:

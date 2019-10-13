@@ -3,7 +3,6 @@
 # $OpenBSD: unbound,v 1.5 2018/01/11 21:09:26 rpe Exp $
 
 daemon="/usr/local/sbin/pfui_firewall.py"
-#daemon_flags="-c /var/unbound/etc/unbound.conf"
 daemon_flags=""
 
 . /etc/rc.d/rc.subr

@@ -134,7 +134,7 @@ def transmit(ip_dict):
     s.settimeout(cfg['SOCKET_TIMEOUT'])
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
-            if not fw['PORT']:
+            if 'PORT' not in fw:
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
                 if cfg['LOGGING']:

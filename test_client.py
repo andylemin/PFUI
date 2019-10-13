@@ -29,34 +29,52 @@ def log_info(message):
     print(str(message))
 
 
+d = dict()
+
+for i in range(100):
+    key = i % 10
+    if key in d:
+        d[key] += 1
+    else:
+        d[key] = 1
+
+
 def transmit(ip_dict):
-    """ Test Transmit to PF Firewall running pfui_firewall listener. """
+    """ Transmits IP and TTL data structure to PF Firewalls running pfui_firewall. """
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Buffer size Zero
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
+    #s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately) - Not supported MacOS
+    print(cfg['SOCKET_TIMEOUT'])
+    s.settimeout(cfg['SOCKET_TIMEOUT'])
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
-            if not fw['PORT']:
+            if 'PORT' not in fw:
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
-                if cfg['DEBUG']:
-                    print("PFUI: SENDING DATA: {} {}".format(str(type(ip_dict)), str(ip_dict)))
-                    stime = datetime.now()
-                s.connect((fw['HOST'], fw['PORT']))
-                if cfg['DEBUG']:
-                    ctime = datetime.now()
-                s.sendall(dumps(ip_dict))
-                if cfg['DEBUG']:
-                    etime = datetime.now()
-                    tctime = ctime - stime
-                    tstime = etime - ctime
-                    print("PFUI: Connect Latency {} secs and {} microsecs".format(str(int(tctime.seconds)),
-                                                                                  str(int(tctime.microseconds))))
-                    print("PFUI: Send Latency {} secs and {} microsecs".format(str(int(tstime.seconds)),
-                                                                               str(int(tstime.microseconds))))
+                if cfg['LOGGING']:
+                    print("PFUIDNS: Sending: {} {}".format(str(type(ip_dict)), str(ip_dict)))
+                    start = datetime.now()
+                try:
+                    s.connect((fw['HOST'], fw['PORT']))
+                    json = dumps(ip_dict)
+                    s.send(dumps(json).encode())
+                    s.send(b"EOT")  # Terminate stream and Provoke ACK
+                    if cfg['BLOCKING']:
+                        _ = s.recv(36)  # Wait for PF rules commit  # TODO Verify is ACK/NACK
+                except socket.timeout:
+                    print("PFUIDNS: Timeout sending to firewall!")  # TODO Need retries for 'blocking' mode
+                except socket.error:
+                    print("PFUIDNS: Socket Error!")
+                except Exception as e:
+                    print("PFUIDNS: Other Socket Exception! {}".format(str(e)))
+                if cfg['LOGGING']:
+                    end = datetime.now()
+                    diff = end - start
+                    log_info("PFUIDNS: Latency {} secs & {} microsecs..".format(str(int(diff.seconds)),
+                                                                                str(int(diff.microseconds))))
             except Exception as e:
-                log_info("ERROR: Failed to send " + str(e))
+                print("PFUIDNS: Failed to send " + str(e))
             s.close()
 
 
