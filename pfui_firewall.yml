@@ -14,7 +14,7 @@ SOCKET_BACKLOG: 5             # How many network connections can be queued up wa
 REDIS_HOST: 127.0.0.1         # IP for Redis Server
 REDIS_PORT: 6379              # Port for Redis Server
 REDIS_DB: 0                   # Redis Database ID Number
-SCAN_PERIOD: 60               # Seconds between PF Table scan and scrub cycles
+SCAN_PERIOD: 300              # Seconds between PF Table scan and scrub cycles
 
 AF4_TABLE: pfui_ipv4_domains                  # IPv4 PF Table
 AF4_TABLE_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Table 'Persist' file - Used during PF reload

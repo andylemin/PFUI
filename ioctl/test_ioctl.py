@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+# TODO: Use the /dev/pf ioctl interface (https://man.openbsd.org/OpenBSD-6.5/pf) for better performance (pfctl takes ~10-30ms);
+# ioctl calls to implement DIOCRADDADDRS, DIOCRGETADDRS, DIOCRDELADDRS
+# ioctl: https://man.openbsd.org/ioctl.2 https://docs.python.org/2/library/fcntl.html
+# Python-C structs: https://docs.python.org/2/library/struct.html
+
 import ctypes
 import fcntl
 import socket
@@ -11,6 +16,9 @@ import os
 # WIP.. ioctl interface to issue DIOCRADDADDRS request directly
 
 
+# /dev/pf supports ioctl(2) commands available through <net/pfvar.h>:
+# #define	DIOCRADDADDRS	_IOWR('D', 67, struct pfioc_table)
+#
 # 'DIOCRADDADDRS struct pfioc_table *io'
 #     Add one or more addresses to a table.
 # On entry, pfrio_table contains the table ID and pfrio_buffer must point to an array of
@@ -107,9 +115,6 @@ class pfr_addr(ctypes.Structure):
         ('pfra_fback', ctypes.c_uint8),
         ('pfra_type', ctypes.c_uint8),
         ('pad[7]', ctypes.c_uint8)]
-
-pfra_ip4addr = pfra_u._pfra_ip4addr
-pfra_ip6addr = pfra_u._pfra_ip6addr
 
 
 rTable = pfr_table()

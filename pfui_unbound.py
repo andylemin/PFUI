@@ -95,7 +95,7 @@ def read_rr(rep=None):
     if rep:
         for i in range(rep.rrset_count):
             rr = rep.rrsets[i]
-            if cfg['DEBUG']:
+            if cfg['LOGGING']:
                 log_info("PFUIDNS: rep.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
             if rr.rk.type_str == 'A':
                 d = rr.entry.data
@@ -104,7 +104,7 @@ def read_rr(rep=None):
                     try:
                         ip = socket.inet_ntop(socket.AF_INET, rr_ip)  # IP bytes to display format
                         ipv4.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
-                        if cfg['DEBUG']:
+                        if cfg['LOGGING']:
                             log_info("PFUIDNS: Found IPv4 address {}".format(str(ipv4[-1])))
                     except:
                         log_err("PFUIDNS: Invalid IPv4 address {}".format(str(ip)))
@@ -115,7 +115,7 @@ def read_rr(rep=None):
                     try:
                         ip = socket.inet_ntop(socket.AF_INET6, rr_ip)
                         ipv6.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
-                        if cfg['DEBUG']:
+                        if cfg['LOGGING']:
                             log_info("PFUIDNS: Found IPv6 address {}".format(str(ipv6[-1])))
                     except:
                         log_err("PFUIDNS: Invalid IPv6 address {}".format(str(ip)))
@@ -137,28 +137,28 @@ def transmit(ip_dict):
             if not fw['PORT']:
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
-                if cfg['DEBUG']:
+                if cfg['LOGGING']:
                     log_info("PFUIDNS: Sending: {} {}".format(str(type(ip_dict)), str(ip_dict)))
                     start = datetime.now()
                 try:
                     s.connect((fw['HOST'], fw['PORT']))
-                    s.sendall(dumps(ip_dict))
+                    s.send(dumps(ip_dict))
+                    s.send(b"EOT")  # Terminate stream and Provoke ACK
                     if cfg['BLOCKING']:
-                        _ = s.recv(3)  # Wait for ACK to confirm PF rules updated. TODO Verify is ACK/NACK
-                    else:
-                        s.close()
+                        _ = s.recv(36)  # Wait for PF rules commit  # TODO Verify is ACK/NACK
                 except socket.timeout:
                     log_err("PFUIDNS: Timeout sending to firewall!")  # TODO Need retries for 'blocking' mode
-                if cfg['DEBUG']:
+                except socket.error:
+                    log_err("PFUIDNS: Socket Error!")
+                if cfg['LOGGING']:
                     end = datetime.now()
                     diff = end - start
-                    log_info("PFUIDNS: Total Latency {} secs & {} microsecs. \
-                             Unblocking query..".format(str(int(diff.seconds)),
-                                                        str(int(diff.microseconds))))
+                    log_info("PFUIDNS: Latency {} secs & {} microsecs..".format(str(int(diff.seconds)),
+                                                                                str(int(diff.microseconds))))
             except Exception as e:
                 log_err("PFUIDNS: Failed to send " + str(e))
-            finally:
-                s.close()
+            #s.shutdown(socket.SHUT_RDWR)
+            s.close()
 
 
 def inplace_cache_callback(qinfo, qstate, rep, rcode, edns, opt_list_out, region, **kwargs):
@@ -212,7 +212,7 @@ def operate(id, event, qstate, qdata):
     if event == MODULE_EVENT_MODDONE:
         # log_info("pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR)")
         struct = None
-        if cfg['DEBUG'] and qstate.return_msg:
+        if cfg['LOGGING'] and qstate.return_msg:
             if qstate.return_msg.qinfo:
                 logger(qstate)
         if qstate.return_msg:

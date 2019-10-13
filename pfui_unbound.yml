@@ -2,7 +2,7 @@
 
 # PFUI_Unbound Configuration (Unbound DNS Server)
 
-DEBUG: True          # Enable verbose logging - Requires daemon mode (unbound -dv) to view RR debug
+LOGGING: True        # Enable verbose logging - Requires daemon mode (unbound -dv) to view RR debug
 SOCKET_TIMEOUT: 2    # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall
 BLOCKING: True       # PFUI by default blocks DNS responses (recommended), until PFUI Firewall updated.
 

@@ -32,6 +32,7 @@ block drop log all
 pass in quick proto tcp from <rfc1918> to self port 22
 
 # Allow Internal PFUI_Unbound servers to perform DNS lookups
+# pass in quick proto tcp from <PFUI_Unbound> to self port 10001  # Example port used by PFUI_Firewall
 # pass quick proto { tcp, udp } from <PFUI_Unbound> to any port { 53, 443, 853 }
 
 # Allow local PFUI_Unbound daemon and NTP daemon
