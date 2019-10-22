@@ -29,16 +29,6 @@ def log_info(message):
     print(str(message))
 
 
-d = dict()
-
-for i in range(100):
-    key = i % 10
-    if key in d:
-        d[key] += 1
-    else:
-        d[key] = 1
-
-
 def transmit(ip_dict):
     """ Transmits IP and TTL data structure to PF Firewalls running pfui_firewall. """
 

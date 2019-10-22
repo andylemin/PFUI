@@ -16,9 +16,11 @@ REDIS_PORT: 6379              # Port for Redis Server
 REDIS_DB: 0                   # Redis Database ID Number
 SCAN_PERIOD: 300              # Seconds between PF Table scan and scrub cycles
 
+CTL: IOCTL                    # IOCTL = ioctl kernel interface (requires DEVPF), PFCTL = pfctl shell interface
+DEVPF: /dev/pf                # PF ioctl interface
 AF4_TABLE: pfui_ipv4_domains                  # IPv4 PF Table
-AF4_TABLE_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Table 'Persist' file - Used during PF reload
+AF4_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Table 'Persist' file - Used during PF reload
 AF6_TABLE: pfui_ipv6_domains                  # IPv6 PF Table
-AF6_TABLE_FILE: /var/spool/pfui_ipv6_domains  # IPv6 PF Table 'Persist' file - Used during PF reload
+AF6_FILE: /var/spool/pfui_ipv6_domains  # IPv6 PF Table 'Persist' file - Used during PF reload
 
 TTL_MULTIPLIER: 1             # Expire entries from PF Tables after RR TTL * TTL_MULTIPLIER

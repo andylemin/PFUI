@@ -7,7 +7,7 @@ table <rfc1918> const { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }
 table <NonRoutable> const { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 240.0.0.0/4, 255.255.255.255/32 }
 
 # table <PFUI_Unbound> const { list of internal DNS servers running PFUI Unbound }
-# table <CorpServices> const { list of business services which do not use DNS }  # E.g. VoIP, SaaS etc
+# table <WhiteList> const { list of business services which do not use DNS }  # E.g. VoIP, SaaS etc
 
 ## Dynamic Tables
 table <pfui_ipv4_domains> persist file "/var/spool/pfui_ipv4_domains"
@@ -20,29 +20,31 @@ set skip on lo
 block drop log all
 
 # PFUI Non-Blocking mode (BLOCKING: False); Do not create state for denied traffic.
+# NB; Client might connect to IP before PFUI Tables are updated with IP (race-condition).
 #block drop log all no state
-# Client might connect to IP before PFUI Tables are updated with IP (race-condition).
 
 # Block traffic from/to non-public address space on public interface
-# block in quick on egress from <NonRoutable>
-# block out quick on egress to <NonRoutable>
+#block in quick on egress from <NonRoutable>
+#block out quick on egress to <NonRoutable>
 
 
-# Allow internal access to firewall
-pass in quick proto tcp from <rfc1918> to self port 22
+# Allow internal management access to firewall
+pass in quick inet proto icmp from <rfc1918> to self
+pass in quick inet proto tcp from <rfc1918> to self port 22
 
 # Allow Internal PFUI_Unbound servers to perform DNS lookups
-# pass in quick proto tcp from <PFUI_Unbound> to self port 10001  # Example port used by PFUI_Firewall
-# pass quick proto { tcp, udp } from <PFUI_Unbound> to any port { 53, 443, 853 }
+pass in quick proto tcp from <PFUI_Unbound> to self port 10001  # Example port used by PFUI_Firewall
+pass quick proto { tcp, udp } from <PFUI_Unbound> to any port { 53, 443, 853 }
 
 # Allow local PFUI_Unbound daemon and NTP daemon
 pass out quick proto { tcp, udp } from self to port { 53, 443, 853 } user _unbound
 pass out quick proto { tcp, udp } from self to port { 123 } user _ntp
 
-# Allow access to services which do no use DNS domains (Direct IP Connection services - VoIP, SaaS etc)
-# pass out quick on egress to <CorpServices>
+# Allow access to services which do no use DNS domains (Direct IP Connections - VoIP, SaaS etc)
+pass out quick on egress to <WhiteList>
 
 # Allow all other traffic only to IP addresses provided by DNS queries
-pass out quick on egress to <pfui_ipv4_domains>  # Dynamic access to DNS resolved IPs
-pass out quick on egress to <pfui_ipv6_domains>  # Dynamic access to DNS resolved IPs
+pass out quick on egress to <pfui_ipv4_domains>  # Dynamic access to IPs successfully resolved from DNS
+pass out quick on egress to <pfui_ipv6_domains>  # Dynamic access to IPs successfully resolved from DNS
 
+# pass out quick on egress to <pfui_ipv4_domains> port <allowed_ports>

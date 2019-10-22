@@ -11,13 +11,13 @@ PF Firewall.
 ### PFUI Firewall comprises two parts;
 
 **"PFUI_Unbound"** - A python module for the [Unbound](https://nlnetlabs.nl/projects/unbound/about/) DNS resolver; 
-reads successful DNS query responses and transmits all resolved IPs and TTLs to the "PFUI_Firewall".
+reads successful DNS query responses and transmits resolved IPs and their TTLs to all "PFUI_Firewall" instances.
 
-**"PFUI_Firewall"** - A standalone python service; receives data from all "PFUI_Unbound" instances and installs the 
+**"PFUI_Firewall"** - A standalone python service; receives data from all "PFUI_Unbound" instances, and installs the 
 received IPs into the PF Firewall Rules (Tables and Persist Files) for use with pf.conf.
 
-The "PFUI_Firewall" role also maintains a Redis database, to track and perform IP expiry (TTL expired) of entries, and
-synchronises the configured 'PF Tables' and 'PF Persist files' with the Redis store.
+The "PFUI_Firewall" role also maintains a Redis database, to track and perform IP TTL expiry of entries. And 
+synchronises redis db changes with the configured 'PF Tables' and 'PF Persist files'.
 
 
 ------
@@ -41,8 +41,8 @@ SSL-terminating web proxies with company certificate becomes difficult.
 ------
 ### A Solution;
 
-**PFUI Firewall** changes the traditional filtering method by instead always _blocking_ all egress traffic by default 
-(thus stopping DoH, Proxy bypasses with BYOD, Botnets, Malware, script-kiddies and hampering Hackers etc).
+**PFUI Firewall** changes the traditional filtering method by instead _always_ blocking all egress traffic by default 
+(thus stopping DoH, Proxy bypasses with BYOD, and Botnets & Malware using dial-back techniques etc).
 
 To permit the legitimate traffic, PFUI simply glue's the DNS layer to the Firewall layer, by installing all 
 DNS resolved IP addresses into PF Tables (and PF Persist Files), just-in-time (non-blocking), or always-in-time 
@@ -67,7 +67,7 @@ also reside in the jail. Virtualenv planned for release candidate. Disable chroo
 ------
 ### Recommendations;
 
-- It is recommended to configure the PF firewall to only allow connections on the pfui_firewall port
+- It is recommended to configure the PF firewall to only allow connections on the PFUI_Firewall port
 from the Unbound DNS servers running the PFUI_Unbound (PFUI does not implement authentication or encryption for 
 performance as DNS resolved IPs must be installed in the firewall before the client connects to those IPs).
 
