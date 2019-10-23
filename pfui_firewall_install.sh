@@ -53,7 +53,8 @@ if [[ "$OS" = "OpenBSD" ]]; then
   chmod 555 /etc/rc.d/pfui_firewall
 
   rcctl enable pfui_firewall
-  rcctl restart pfui_firewall
+  rcctl stop pfui_firewall
+  rcctl start pfui_firewall
 
   while [[ $SETPFCONF != "y" && $SETPFCONF != "n" ]]; do
     read -rp "PFUIFW: Install example pf.conf rules? (Overwites any existing pf.conf) [y/n]: " -e SETPFCONF

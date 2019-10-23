@@ -23,7 +23,8 @@ import socket
 from sys import exit
 from json import dumps
 from yaml import safe_load
-from datetime import datetime
+from time import time
+#from datetime import datetime
 
 CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
 
@@ -95,19 +96,18 @@ def read_rr(rep=None):
     if rep:
         for i in range(rep.rrset_count):
             rr = rep.rrsets[i]
-            if cfg['LOGGING']:
-                log_info("PFUIDNS: rep.rrsets[{}]: rr.rk.type_str {}".format(str(i), str(rr.rk.type_str)))
             if rr.rk.type_str == 'A':
                 d = rr.entry.data
                 for j in range(d.count + d.rrsig_count):
                     rr_ip = d.rr_data[j][-4:]  # Last four bytes contain the IPv4 address
-                    try:
-                        ip = socket.inet_ntop(socket.AF_INET, rr_ip)  # IP bytes to display format
-                        ipv4.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
-                        if cfg['LOGGING']:
-                            log_info("PFUIDNS: Found IPv4 address {}".format(str(ipv4[-1])))
-                    except:
-                        log_err("PFUIDNS: Invalid IPv4 address {}".format(str(ip)))
+                    if rr_ip != b'\x00\x00\x00\x00':
+                        try:
+                            ip = socket.inet_ntop(socket.AF_INET, rr_ip)  # IP bytes to display format
+                            ipv4.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
+                            if cfg['LOGGING']:
+                                log_info("PFUIDNS: Found IPv4 address {}".format(ipv4[-1]))
+                        except:
+                            log_err("PFUIDNS: Invalid IPv4 address {}".format(ip))
             elif rr.rk.type_str == 'AAAA':
                 d = rr.entry.data
                 for j in range(d.count + d.rrsig_count):
@@ -116,9 +116,9 @@ def read_rr(rep=None):
                         ip = socket.inet_ntop(socket.AF_INET6, rr_ip)
                         ipv6.append({"ip": ip, "ttl": int(d.rr_ttl[j])})
                         if cfg['LOGGING']:
-                            log_info("PFUIDNS: Found IPv6 address {}".format(str(ipv6[-1])))
+                            log_info("PFUIDNS: Found IPv6 address {}".format(ipv6[-1]))
                     except:
-                        log_err("PFUIDNS: Invalid IPv6 address {}".format(str(ip)))
+                        log_err("PFUIDNS: Invalid IPv6 address {}".format(ip))
     if ipv4 or ipv6:
         return {'AF4': ipv4, 'AF6': ipv6}
     else:
@@ -128,36 +128,47 @@ def read_rr(rep=None):
 def transmit(ip_dict):
     """ Transmits IP and TTL data structure to PF Firewalls running pfui_firewall. """
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
-    s.settimeout(cfg['SOCKET_TIMEOUT'])
+    if cfg['SOCKET_PROTO'] == "UDP":
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1400)
+    elif cfg['SOCKET_PROTO'] == "TCP":
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
+        s.settimeout(cfg['SOCKET_TIMEOUT'])
+
     for fw in cfg['FIREWALLS']:
         if fw['HOST']:
             if 'PORT' not in fw:
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
                 if cfg['LOGGING']:
-                    log_info("PFUIDNS: Sending: {} {}".format(str(type(ip_dict)), str(ip_dict)))
-                    start = datetime.now()
-                try:
-                    s.connect((fw['HOST'], fw['PORT']))
-                    s.send(dumps(ip_dict))
-                    s.send(b"EOT")  # Terminate stream and Provoke ACK
-                    if cfg['BLOCKING']:
-                        _ = s.recv(36)  # Wait for PF rules commit  # TODO Verify is ACK/NACK
-                except socket.timeout:
-                    log_err("PFUIDNS: Timeout sending to firewall!")  # TODO Need retries for 'blocking' mode
-                except socket.error:
-                    log_err("PFUIDNS: Socket Error!")
+                    log_info("PFUIDNS: Sending : {} {}".format(type(ip_dict), ip_dict))
+                    start = time()
+                if cfg['SOCKET_PROTO'] == "UDP":
+                    try:
+                        s.sendto(dumps(ip_dict), (fw['HOST'], fw['PORT']))
+                        if cfg['BLOCKING']:
+                            _, _ = s.recvfrom(36)
+                    except Exception as e:
+                        log_err("PFUIDNS: UDP Socket Error {}".format(e))
+                elif cfg['SOCKET_PROTO'] == "TCP":
+                    try:
+                        s.connect((fw['HOST'], fw['PORT']))
+                        s.send(dumps(ip_dict))
+                        s.send(b"EOT")  # Terminate stream and Provoke ACK
+                        if cfg['BLOCKING']:
+                            _ = s.recv(36)  # Wait for PF rules commit  # TODO Verify is ACK/NACK
+                    except socket.timeout:
+                        log_err("PFUIDNS: Socket timeout to firewall!")  # TODO Need retries for 'blocking' mode
+                    except socket.error:
+                        log_err("PFUIDNS: Socket Error! Check pfui_firewall is running.")
                 if cfg['LOGGING']:
-                    end = datetime.now()
-                    diff = end - start
-                    log_info("PFUIDNS: Latency {} secs & {} microsecs..".format(str(int(diff.seconds)),
-                                                                                str(int(diff.microseconds))))
+                    end = time()
+                    diff = (end - start)*(10**6)
+                    log_info("PFUIDNS: Query Unblocked {} microsecs".format(diff))
             except Exception as e:
                 log_err("PFUIDNS: Failed to send " + str(e))
-            #s.shutdown(socket.SHUT_RDWR)
             s.close()
 
 

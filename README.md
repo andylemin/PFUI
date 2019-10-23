@@ -3,8 +3,9 @@
 
 interjection - Informal; "an exclamation indicating disagreement or rejection".
 
-**PFUI Firewall** provides a "Deny-by-Default PF based DNS-Firewall", by tightly coupling Unbound's DNS and OpenBSD's
-PF Firewall.
+**PFUI Firewall** provides a "Deny-by-Default PF based DNS-Firewall".
+By tightly coupling Unbound's DNS and OpenBSD's PF Firewall, egress traffic can be controlled with DNS Blacklists, 
+instead of allowing any traffic outbound.
 
 
 ------

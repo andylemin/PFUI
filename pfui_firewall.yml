@@ -2,25 +2,29 @@
 
 # PFUI_Firewall Configuration (PF Firewall)
 
+# Logging
 LOGGING: True                 # Enable verbose logging ('True'/'False')
 LOG_LEVEL: DEBUG              # 'DEBUG', 'INFO' (testing), 'ERROR' (production)
 
-SOCKET_LISTEN: 0.0.0.0        # Interface to listen on (0.0.0.0 = All interfaces - not recommended)
+# Networking
+SOCKET_PROTO: UDP             # UDP or TCP (Dual proto not yet supported)
+SOCKET_LISTEN: 0.0.0.0        # Interface(s) to listen on (0.0.0.0 = All interfaces - not recommended)
 SOCKET_PORT: 10001            # Port to listen on (Permit inbound access to this port from PFUI_Unbound instances)
 SOCKET_TIMEOUT: 2             # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall (keep small)
-SOCKET_BUFFER: 512            # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
+SOCKET_BUFFER: 1024           # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
 SOCKET_BACKLOG: 5             # How many network connections can be queued up waiting to be accepted
 
+# Database
 REDIS_HOST: 127.0.0.1         # IP for Redis Server
 REDIS_PORT: 6379              # Port for Redis Server
 REDIS_DB: 0                   # Redis Database ID Number
-SCAN_PERIOD: 300              # Seconds between PF Table scan and scrub cycles
+SCAN_PERIOD: 60               # Seconds between PF Table scan and scrub cycles
+TTL_MULTIPLIER: 1             # Expire entries from DB after RR TTL * TTL_MULTIPLIER
 
+# PF Tables & Files
 CTL: IOCTL                    # IOCTL = ioctl kernel interface (requires DEVPF), PFCTL = pfctl shell interface
 DEVPF: /dev/pf                # PF ioctl interface
 AF4_TABLE: pfui_ipv4_domains                  # IPv4 PF Table
 AF4_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Table 'Persist' file - Used during PF reload
 AF6_TABLE: pfui_ipv6_domains                  # IPv6 PF Table
 AF6_FILE: /var/spool/pfui_ipv6_domains  # IPv6 PF Table 'Persist' file - Used during PF reload
-
-TTL_MULTIPLIER: 1             # Expire entries from PF Tables after RR TTL * TTL_MULTIPLIER

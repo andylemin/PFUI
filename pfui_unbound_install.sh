@@ -87,6 +87,10 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   cp -f "${DIR}/rc.d/pfui_unbound" /etc/rc.d/pfui_unbound
   chmod 555 /etc/rc.d/pfui_unbound
+
+  rcctl stop unbound
+  rcctl disable unbound
+
   rcctl enable pfui_unbound
   rcctl restart pfui_unbound
 
