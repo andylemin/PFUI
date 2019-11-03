@@ -153,7 +153,7 @@ def IOCTL(logger, dev: str, iocmd, af: AddressFamily, table: str, addrs: list):
 
     with open(dev, 'w') as d:
         ioctl(d, iocmd, io)
-    return io.pfrio_nadd
+    return io.pfrio_nadd  # Successful commits
 
 
 def _IOWR(group, num, type):
@@ -167,18 +167,25 @@ DIOCRDELADDRS = _IOWR('D', 68, pfioc_table)
 
 
 def table_push(logger, log: bool, cfg: dict, af: AddressFamily, table: str, ip_list: list):
+
+    def pfctl_add(table, ip_list):
+        r = subprocess.run(["pfctl", "-t", table, "-T", "add"] + ip_list, stdout=subprocess.DEVNULL)
+        if r.returncode != 0:
+            raise Exception()
+        else:
+            return 1
+
     if log:
         logger.info("PFUIFW: Installing {} into {}".format(ip_list, table))
     try:
         if cfg['CTL'] == "IOCTL":
-            r = IOCTL(logger, cfg['DEVPF'], DIOCRADDADDRS, af, table, ip_list)
-        elif cfg['CTL'] == "PFCTL":
-            r = subprocess.run(["pfctl", "-t", table, "-T", "add"] + ip_list, stdout=subprocess.DEVNULL)
-            if r.returncode != 0:
-                raise Exception()
-            else:
-                r = 1
-        return r  # Successful commits
+            try:
+                r = IOCTL(logger, cfg['DEVPF'], DIOCRADDADDRS, af, table, ip_list)
+            except:
+                r = pfctl_add(table, ip_list)
+        else:
+            r = pfctl_add(table, ip_list)
+        return r
     except Exception as e:
         logger.error("PFUIFW: Failed to install {} into {}. {}".format(ip_list, table, e))
         return False
@@ -203,13 +210,15 @@ def table_pop(logger, log: bool, cfg: dict, af: AddressFamily, table: str, ip: s
 
 
 def db_push(logger, log: bool, db, table: str, epoch: int, ip: str, ttl: int = 0):
+    # TODO: Add exception and retry handling
     if log:
         logger.info("PFUIFW: Installing {} into Redis DB".format(ip))
     try:
+        key = "{}{}{}".format(table, "^", ip)
         if ttl:
-            db.hmset(table + "^" + ip, {'epoch': epoch, 'ttl': ttl})
+            db.hmset(key, {'epoch': epoch, 'ttl': ttl})
         else:
-            db.hmset(table + "^" + ip, {'epoch': epoch})
+            db.hmset(key, {'epoch': epoch})
         return True
     except Exception as e:
         logger.error("PFUIFW: Failed to install {} into Redis DB. {}".format(ip, e))
@@ -217,10 +226,12 @@ def db_push(logger, log: bool, db, table: str, epoch: int, ip: str, ttl: int = 0
 
 
 def db_pop(logger, log: bool, db, table: str, ip: str):
+    # TODO: Add exception and retry handling
     if log:
         logger.info("PFUIFW: Clearing {} from Redis DB".format(ip, db))
     try:
-        db.delete(table + "^" + ip)
+        key = "{}{}{}".format(table, "^", ip)
+        db.delete(key)
         return True
     except Exception as e:
         logger.error("PFUIFW: Failed to delete {} from Redis DB. {}".format(ip, e))
@@ -234,12 +245,13 @@ def file_push(logger, log: bool, file: str, ip_list: list):
     try:
         with open(file, "r+") as f:
             for ip in ip_list:
-                found = next((l for l in f if ip + "\n" == l), False)
-                if not found and ip:
+                found = next((l for l in f if "{}\n".format(ip) == l), False)
+                if ip and not found:
                     inserts.append(ip)
+                    inserts.append("\n")
             try:
                 flock(f, LOCK_EX)
-                f.write("\n".join(inserts) + "\n")  # append missing
+                f.write("".join(inserts))  # append missing
             except Exception as e:
                 logger.error("PFUIFW: Write error {}".format(e))
             finally:
@@ -251,11 +263,13 @@ def file_push(logger, log: bool, file: str, ip_list: list):
 
 
 def file_pop(logger, log: bool, file: str, ip: str):
+    # TODO: Rewrite Failed to remove IP ... from file .. input() already active
     if log:
         logger.info("PFUIFW: Clearing {} from {}".format(ip, file))
     try:
         for l in fileinput.input(file, inplace=1):  # Backup file and redirect STDOUT to new file
-            if ip + "\n" == l or l == "" or l == "\n":
+            # if ip + "\n" == l or l == "" or l == "\n":
+            if "{}\n".format(ip) == l or "" == l or "\n" == l:
                 continue  # Skip line to remove
             else:
                 sys.stdout.write(l)
@@ -305,7 +319,8 @@ class ScanSync(Thread):
         """ Expire IPs with last update epoch/timestamp older than (TTL * TTL_MULTIPLIER). """
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Scan DB({}) for expiring {} IPs.".format(self.cfg['REDIS_DB'], self.table))
-        keys = self.db.keys(self.table + "*")
+        # keys = self.db.keys(self.table + "*")
+        keys = self.db.keys("{}*".format(self.table))
         now = int(time())
         for key in keys:
             try:
@@ -324,7 +339,8 @@ class ScanSync(Thread):
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Sync PF Table {} with DB({})".format(self.table, self.cfg['REDIS_DB']))
         try:
-            keys = self.db.keys(self.table + "*")
+            # keys = self.db.keys(self.table + "*")
+            keys = self.db.keys("{}*".format(self.table))
             db_ips = [k.decode('utf-8').split("^")[1] for k in keys]
             lines = list(subprocess.Popen(["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE).stdout)
             t_ips = [l.decode('utf-8').strip() for l in lines]
@@ -347,7 +363,8 @@ class ScanSync(Thread):
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Sync PF File {} with DB({})".format(self.table, self.cfg['REDIS_DB']))
         try:
-            keys = self.db.keys(self.table + "*")
+            # keys = self.db.keys(self.table + "*")
+            keys = self.db.keys("{}*".format(self.table))
             db_ips = [k.decode('utf-8').split("^")[1] for k in keys]
             with open(self.file) as f:
                 content = f.readlines()
@@ -501,20 +518,19 @@ class PFUI_Firewall(Service):
                     break
         if self.cfg['LOGGING']:
             ntime = time()
-            self.logger.info("PFUIFW: Received {} from {}:{}".format(data, ip, port))
+            self.logger.info("PFUIFW: Received {} from ({}){}:{}".format(data, proto, ip, port))
 
         # Work lists
         af4_addrs = [rr['ip'] for rr in data['AF4'] if rr['ip']]
         af6_addrs = [rr['ip'].lower() for rr in data['AF6'] if rr['ip']]
 
         # Update PF Tables
-        r4, r6 = 0, 0
         if af4_addrs:
-            r4 = table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg,
-                            af=AF_INET, table=self.cfg['AF4_TABLE'], ip_list=af4_addrs)
+            table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg,
+                       af=AF_INET, table=self.cfg['AF4_TABLE'], ip_list=af4_addrs)
         if af6_addrs:
-            r6 = table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg,
-                            af=AF_INET6, table=self.cfg['AF6_TABLE'], ip_list=af6_addrs)
+            table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg,
+                       af=AF_INET6, table=self.cfg['AF6_TABLE'], ip_list=af6_addrs)
         if self.cfg['LOGGING']:
             ttime = time()
 
@@ -569,12 +585,12 @@ class PFUI_Firewall(Service):
             trtime = (rtime - n1time)*(10**6)  # Redis Write Time
             tftime = (etime - rtime)*(10**6)  # File Write Time
             ttime = (etime - stime)*(10**6)   # Total Time
-            self.logger.info("PFUIFW: Network Latency {} microsecs".format(tntime))
-            self.logger.info("PFUIFW: PF Table Latency {} microsecs".format(tptime))
-            self.logger.info("PFUIFW: ACK Latency {} microsecs".format(tn1time))
-            self.logger.info("PFUIFW: Redis Latency {} microsecs".format(trtime))
-            self.logger.info("PFUIFW: File Latency {} microsecs".format(tftime))
-            self.logger.info("PFUIFW: Total Latency {} microsecs".format(ttime))
+            self.logger.info("PFUIFW: Network Latency {0:.2f} microsecs".format(tntime))
+            self.logger.info("PFUIFW: PF Table Latency {0:.2f} microsecs".format(tptime))
+            self.logger.info("PFUIFW: ACK Latency {0:.2f} microsecs".format(tn1time))
+            self.logger.info("PFUIFW: Redis Latency {0:.2f} microsecs".format(trtime))
+            self.logger.info("PFUIFW: File Latency {0:.2f} microsecs".format(tftime))
+            self.logger.info("PFUIFW: Total Latency {0:.2f} microsecs".format(ttime))
 
 
 if __name__ == '__main__':

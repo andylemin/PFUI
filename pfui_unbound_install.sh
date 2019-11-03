@@ -3,8 +3,8 @@
 # Builds Unbound with Python module support, and adds PFUI_Unbound
 #
 
-err=0
-trap 'err=1' ERR
+#err=0
+#trap 'err=1' ERR
 
 args=("$@")
 TARGET=${args[0]}
@@ -28,7 +28,7 @@ else
 fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
-  echo "PFUIFW: Installing Python"
+  echo "PFUIFW: Installing Python2"
   export PKG_PATH=http://ftp.openbsd.org/pub/OpenBSD/%v/packages/%a/
   pkg_add -i python%2
   pkg_add -i py-setuptools
@@ -36,9 +36,19 @@ if [[ "$OS" = "OpenBSD" ]]; then
   if [[ ! -e /usr/local/bin/python && -e /usr/local/bin/python2 ]]; then
     ln -s /usr/local/bin/python2 /usr/local/bin/python
   fi
-  pkg_add -i python%3
+
+  echo "PFUIFW: Installing Python3"
+  pkg_add -i python%3.7; RET=$?
+  if [[ ${RET} != 0 ]]; then
+    pkg_add -i python%3.6; RET=$?
+  fi
+    if [[ ${RET} != 0 ]]; then
+    pkg_add -i python%3; RET=$?
+  fi
   pkg_add -i py3-setuptools
   pkg_add -i py3-pip
+
+  echo "PFUIFW: Installing Python Libraries"
   python -m pip install pyyaml
   python3 -m pip install pyyaml
 
@@ -96,4 +106,4 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
 fi
 
-test $err = 0 # Return non-zero if any command failed
+#test $err = 0 # Return non-zero if any command failed

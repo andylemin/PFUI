@@ -25,16 +25,27 @@ else
 fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
-  echo "PFUIFW: Installing Python"
+  echo "PFUIFW: Installing Python2"
+  export PKG_PATH=http://ftp.openbsd.org/pub/OpenBSD/%v/packages/%a/
   pkg_add -i python%2
   pkg_add -i py-setuptools
   pkg_add -i py-pip
   if [[ ! -e /usr/local/bin/python && -e /usr/local/bin/python2 ]]; then
     ln -s /usr/local/bin/python2 /usr/local/bin/python
   fi
-  pkg_add -i python%3
+
+  echo "PFUIFW: Installing Python3"
+  pkg_add -i python%3.7; RET=$?
+  if [[ ${RET} != 0 ]]; then
+    pkg_add -i python%3.6; RET=$?
+  fi
+    if [[ ${RET} != 0 ]]; then
+    pkg_add -i python%3; RET=$?
+  fi
   pkg_add -i py3-setuptools
   pkg_add -i py3-pip
+
+  echo "PFUIFW: Installing Python Libraries"
   python3 -m pip install redis pyyaml service
 
   echo "PFUIFW: Installing and Starting Redis"

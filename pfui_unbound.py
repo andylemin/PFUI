@@ -20,7 +20,7 @@ declared here and called by Unbound depending on EVENT type..
 """
 
 import socket
-from sys import exit
+from sys import exit, getsizeof
 from json import dumps
 from yaml import safe_load
 from time import time
@@ -134,7 +134,8 @@ def transmit(ip_dict):
     elif cfg['SOCKET_PROTO'] == "TCP":
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
+        #s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, getsizeof(ip_dict))
         s.settimeout(cfg['SOCKET_TIMEOUT'])
 
     for fw in cfg['FIREWALLS']:
@@ -143,7 +144,7 @@ def transmit(ip_dict):
                 fw['PORT'] = cfg['DEFAULT_PORT']
             try:
                 if cfg['LOGGING']:
-                    log_info("PFUIDNS: Sending : {} {}".format(type(ip_dict), ip_dict))
+                    log_info("PFUIDNS: Sending : {}".format(ip_dict))
                     start = time()
                 if cfg['SOCKET_PROTO'] == "UDP":
                     try:
