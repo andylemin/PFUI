@@ -63,10 +63,6 @@ if [[ "$OS" = "OpenBSD" ]]; then
   cp -f "${DIR}/rc.d/pfui_firewall" /etc/rc.d/pfui_firewall
   chmod 555 /etc/rc.d/pfui_firewall
 
-  rcctl enable pfui_firewall
-  rcctl stop pfui_firewall
-  rcctl start pfui_firewall
-
   while [[ $SETPFCONF != "y" && $SETPFCONF != "n" ]]; do
     read -rp "PFUIFW: Install example pf.conf rules? (Overwites any existing pf.conf) [y/n]: " -e SETPFCONF
   done
@@ -77,7 +73,14 @@ if [[ "$OS" = "OpenBSD" ]]; then
     chmod 666 /var/spool/pfui_ipv4_domains
     chmod 666 /var/spool/pfui_ipv6_domains
   fi
-
 fi
 
-test $err = 0 # Return non-zero if any command failed
+if [[ $err != 0 ]]; then
+  echo "PFUIFW: All Completed, but with some errors. Please investigate."
+else
+  echo "PFUIFW: All Completed successfully."
+fi
+echo "PFUIFW: PFUI_Firewall configuration file located at '/etc/pfui_firewall.yml'"
+echo "PFUIFW: Enable service 'rcctl enable pfui_firewall'"
+echo "PFUIFW: Start service 'rcctl start pfui_firewall'"
+

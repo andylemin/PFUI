@@ -3,8 +3,8 @@
 # Builds Unbound with Python module support, and adds PFUI_Unbound
 #
 
-#err=0
-#trap 'err=1' ERR
+err=0
+trap 'err=1' ERR
 
 args=("$@")
 TARGET=${args[0]}
@@ -28,7 +28,7 @@ else
 fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
-  echo "PFUIFW: Installing Python2"
+  echo "PFUIDNS: Installing Python2"
   export PKG_PATH=http://ftp.openbsd.org/pub/OpenBSD/%v/packages/%a/
   pkg_add -i python%2
   pkg_add -i py-setuptools
@@ -37,7 +37,7 @@ if [[ "$OS" = "OpenBSD" ]]; then
     ln -s /usr/local/bin/python2 /usr/local/bin/python
   fi
 
-  echo "PFUIFW: Installing Python3"
+  echo "PFUIDNS: Installing Python3"
   pkg_add -i python%3.7; RET=$?
   if [[ ${RET} != 0 ]]; then
     pkg_add -i python%3.6; RET=$?
@@ -48,11 +48,11 @@ if [[ "$OS" = "OpenBSD" ]]; then
   pkg_add -i py3-setuptools
   pkg_add -i py3-pip
 
-  echo "PFUIFW: Installing Python Libraries"
+  echo "PFUIDNS: Installing Python Libraries"
   python -m pip install pyyaml
   python3 -m pip install pyyaml
 
-  echo "PFUIFW: Installing Package Dependancies"
+  echo "PFUIDNS: Installing Package Dependancies"
   pkg_add -i swig
   pkg_add -i git
 
@@ -97,13 +97,14 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   cp -f "${DIR}/rc.d/pfui_unbound" /etc/rc.d/pfui_unbound
   chmod 555 /etc/rc.d/pfui_unbound
-
-  rcctl stop unbound
-  rcctl disable unbound
-
-  rcctl enable pfui_unbound
-  rcctl restart pfui_unbound
-
 fi
 
-#test $err = 0 # Return non-zero if any command failed
+if [[ $err != 0 ]]; then
+  echo "PFUIDNS: All Completed, but with some errors. Please investigate."
+else
+  echo "PFUIDNS: All Completed successfully."
+fi
+echo "PFUIDNS: PFUI_Unbound configuration file located at '${TARGET}/pfui_unbound.yml'"
+echo "PFUIDNS: Enable service 'rcctl enable pfui_unbound'"
+echo "PFUIDNS: Start service 'rcctl start pfui_unbound' (stop unbound 'rcctl stop unbound' first, or use unique port)"
+
