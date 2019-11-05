@@ -1,28 +1,27 @@
 #!/usr/bin/env python
 
+# Failure Testing script
+
 import socket
 from time import time
 from json import dumps
 from yaml import safe_load
 
-TEST_MESSAGE1 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}],
-                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+TEST_MESSAGE1 = ({'ip': '192.0.2.1', 'ttl': 3600},
+                 {'ip': '192.0.2.2', 'ttl': 100},
+                 {'ip': '192.0.2.3', 'ttl': 100})
 
-TEST_MESSAGE2 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600},
-                         {'ip': '192.0.2.1', 'ttl': 100}],
-                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+TEST_MESSAGE2 = [{'ip': '192.0.2.1', 'ttl': 3600},
+                 {'ip': '192.0.2.2', 'ttl': 100},
+                 {'ip': '192.0.2.3', 'ttl': 100}]
 
-TEST_MESSAGE3 = {'AF4': [{'ip': '192.0.2.1', 'ttl': 3600},
-                         {'ip': '192.0.2.2', 'ttl': 100},
-                         {'ip': '192.0.2.3', 'ttl': 100}],
-                 'AF6': [{'ip': '2001:db8:1:1::1', 'ttl': 3600},
+TEST_MESSAGE3 = "{'ip': '192.0.2.1', 'ttl': 3600}, {'ip': '192.0.2.2', 'ttl': 100}, {'ip': '192.0.2.3', 'ttl': 100}"
+
+TEST_MESSAGE4 = {'AF4': [{'ip': '192.0.2.1', 'ttl': 3600},
+                         {'ip': '192.0.2', 'ttl': 100},
+                         {'ip': '192.0.', 'ttl': 100}],
+                 'AF6': [{'ip': '2001::1:1::1', 'ttl': 3600},
                          {'ip': '2001:DB8:1:2::1', 'ttl': 100}]}
-
-TEST_MESSAGE4 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}],
-                 'AF6': []}
-
-TEST_MESSAGE6 = {'AF4': [],
-                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
 
 
 def log_info(message):
@@ -81,4 +80,7 @@ except Exception as e:
     print("YAML Config File not found or cannot load: " + str(e))
     exit(1)
 
+transmit(TEST_MESSAGE1)
+transmit(TEST_MESSAGE2)
 transmit(TEST_MESSAGE3)
+transmit(TEST_MESSAGE4)

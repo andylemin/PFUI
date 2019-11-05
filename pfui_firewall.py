@@ -25,10 +25,10 @@
 import ast
 import sys
 import logging
-import fileinput
 import subprocess
 
-from socket import *
+#from socket import *
+import socket
 from ctypes import *
 from fcntl import ioctl, flock, LOCK_EX, LOCK_UN
 
@@ -61,10 +61,10 @@ PFR_TFLAG_SETMASK    = 0x3C
 PFR_TFLAG_ALLMASK    = 0x7F
 
 # ioctl() operations
-IOCPARM_MASK     = 0x1fff
-IOC_OUT          = 0x40000000
-IOC_IN           = 0x80000000
-IOC_INOUT        = IOC_IN | IOC_OUT
+IOCPARM_MASK         = 0x1fff
+IOC_OUT              = 0x40000000
+IOC_IN               = 0x80000000
+IOC_INOUT            = IOC_IN | IOC_OUT
 
 
 # C Structures
@@ -106,24 +106,24 @@ class pfr_addr(Structure):      # From /usr/include/net/pfvar.h
     _anonymous_ = ("pfra_u",)
 
 
-def IOCTL(logger, dev: str, iocmd, af: AddressFamily, table: str, addrs: list):
+def IOCTL(logger, dev: str, iocmd, af: socket.AddressFamily, table: str, addrs: list):
     """ Populate complete pfioc_table(Structure) with table and IPs,
     and write with given command to /dev/pf ioctl interface. """
 
-    def pfr_addr_struct(logger, af: AddressFamily, addr: str):
+    def pfr_addr_struct(logger, af: socket.AddressFamily, addr: str):
         """Convert this instance to a pfr_addr structure."""
         a = pfr_addr()
 
         try:
-            addr = inet_pton(af, str(addr))  # IP string format to packed binary format
+            addr = socket.inet_pton(af, str(addr))  # IP string format to packed binary format
             memmove(a.pfra_ip6addr, c_char_p(addr), len(addr))  # (dst, src, count)
         except Exception as e:
             logger.info("Error building struct for ip {} {}".format(addr, e))
 
         a.pfra_af = af
-        if af == AF_INET:
+        if af == socket.AF_INET:
             a.pfra_net = 32
-        elif af == AF_INET6:
+        elif af == socket.AF_INET6:
             a.pfra_net = 128
         a.pfra_not = 0
         a.pfra_fback = 0
@@ -166,17 +166,17 @@ DIOCRADDADDRS = _IOWR('D', 67, pfioc_table)
 DIOCRDELADDRS = _IOWR('D', 68, pfioc_table)
 
 
-def table_push(logger, log: bool, cfg: dict, af: AddressFamily, table: str, ip_list: list):
+def table_push(logger, log: bool, cfg: dict, af: socket.AddressFamily, table: str, ip_list: list):
 
     def pfctl_add(table, ip_list):
         r = subprocess.run(["pfctl", "-t", table, "-T", "add"] + ip_list, stdout=subprocess.DEVNULL)
-        if r.returncode != 0:
-            raise Exception()
+        if r.returncode != 0:  # Non-zero error codes
+            logger.error("Could not install {} into {}".format(ip_list, table))
         else:
             return 1
 
     if log:
-        logger.info("PFUIFW: Installing {} into {}".format(ip_list, table))
+        logger.info("PFUIFW: Installing {} into table {}".format(ip_list, table))
     try:
         if cfg['CTL'] == "IOCTL":
             try:
@@ -187,13 +187,13 @@ def table_push(logger, log: bool, cfg: dict, af: AddressFamily, table: str, ip_l
             r = pfctl_add(table, ip_list)
         return r
     except Exception as e:
-        logger.error("PFUIFW: Failed to install {} into {}. {}".format(ip_list, table, e))
+        logger.error("PFUIFW: Failed to install {} into table {}. {}".format(ip_list, table, e))
         return False
 
 
-def table_pop(logger, log: bool, cfg: dict, af: AddressFamily, table: str, ip: str):
+def table_pop(logger, log: bool, cfg: dict, af: socket.AddressFamily, table: str, ip: str):
     if log:
-        logger.info("PFUIFW: Clearing {} from {}".format(ip, table))
+        logger.info("PFUIFW: Clearing {} from table {}".format(ip, table))
     try:
         if cfg['CTL'] == "IOCTL":
             r = IOCTL(logger, cfg['DEVPF'], DIOCRDELADDRS, af, table, [ip])
@@ -205,20 +205,24 @@ def table_pop(logger, log: bool, cfg: dict, af: AddressFamily, table: str, ip: s
                 r = 1
         return r  # Successful commits
     except Exception as e:
-        logger.error("PFUIFW: Failed to delete {} from {}. {}".format(ip, table, e))
+        logger.error("PFUIFW: Failed to delete {} from table {}. {}".format(ip, table, e))
         return False
 
 
-def db_push(logger, log: bool, db, table: str, epoch: int, ip: str, ttl: int = 0):
+def db_push(logger, log: bool, db, table: str, data: list):
     # TODO: Add exception and retry handling
     if log:
-        logger.info("PFUIFW: Installing {} into Redis DB".format(ip))
+        logger.info("PFUIFW: Installing {} into Redis DB".format(data))
+    now = int(time())
     try:
-        key = "{}{}{}".format(table, "^", ip)
-        if ttl:
-            db.hmset(key, {'epoch': epoch, 'ttl': ttl})
-        else:
-            db.hmset(key, {'epoch': epoch})
+        pipe = db.pipeline()
+        for ip, ttl in data:
+            key = "{}{}{}".format(table, "^", ip)
+            if ttl < now:  # Real TTL
+                pipe.hmset(key, {'epoch': now, 'ttl': ttl})
+            else:  # Cached entry TTL = Future Expiry Epoch
+                pipe.hmset(key, {'epoch': now})  # TODO: Risk of records with no ttl
+        pipe.execute()
         return True
     except Exception as e:
         logger.error("PFUIFW: Failed to install {} into Redis DB. {}".format(ip, e))
@@ -240,7 +244,7 @@ def db_pop(logger, log: bool, db, table: str, ip: str):
 
 def file_push(logger, log: bool, file: str, ip_list: list):
     if log:
-        logger.info("PFUIFW: Installing {} into {}".format(ip_list, file))
+        logger.info("PFUIFW: Installing {} into file {}".format(ip_list, file))
     inserts = []
     try:
         with open(file, "r+") as f:
@@ -253,7 +257,7 @@ def file_push(logger, log: bool, file: str, ip_list: list):
                 flock(f, LOCK_EX)
                 f.write("".join(inserts))  # append missing
             except Exception as e:
-                logger.error("PFUIFW: Write error {}".format(e))
+                logger.error("PFUIFW: f.write error {}".format(e))
             finally:
                 flock(f, LOCK_UN)
         return True
@@ -263,20 +267,45 @@ def file_push(logger, log: bool, file: str, ip_list: list):
 
 
 def file_pop(logger, log: bool, file: str, ip: str):
-    # TODO: Rewrite Failed to remove IP ... from file .. input() already active
     if log:
-        logger.info("PFUIFW: Clearing {} from {}".format(ip, file))
+        logger.info("PFUIFW: Clearing {} from file {}".format(ip, file))
     try:
-        for l in fileinput.input(file, inplace=1):  # Backup file and redirect STDOUT to new file
-            # if ip + "\n" == l or l == "" or l == "\n":
-            if "{}\n".format(ip) == l or "" == l or "\n" == l:
-                continue  # Skip line to remove
-            else:
-                sys.stdout.write(l)
-        return True
+        with open(file, "r") as f:
+            olines = f.readlines()
+        nlines = [l for l in olines if l.strip() not in [ip, ""]]
+        with open(file, "w") as f:
+            try:
+                flock(f, LOCK_EX)
+                f.writelines(nlines)
+            except Exception as e:
+                logger.error("PFUIFW: f.writelines error {}".format(e))
+            finally:
+                flock(f, LOCK_UN)
     except Exception as e:
         logger.error("PFUIFW: Failed to delete IP {} from {}. {}".format(ip, file, e))
         return False
+
+
+def is_ipv4(address):
+    try:
+        socket.inet_pton(socket.AF_INET, address)
+    except AttributeError:  # no inet_pton
+        try:
+            socket.inet_aton(address)
+        except socket.error:
+            return False
+        return address
+    except socket.error:  # not a valid address
+        return False
+    return address
+
+
+def is_ipv6(address):
+    try:
+        socket.inet_pton(socket.AF_INET6, address)
+    except socket.error:  # not a valid address
+        return False
+    return address
 
 
 class ScanSync(Thread):
@@ -319,7 +348,6 @@ class ScanSync(Thread):
         """ Expire IPs with last update epoch/timestamp older than (TTL * TTL_MULTIPLIER). """
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Scan DB({}) for expiring {} IPs.".format(self.cfg['REDIS_DB'], self.table))
-        # keys = self.db.keys(self.table + "*")
         keys = self.db.keys("{}*".format(self.table))
         now = int(time())
         for key in keys:
@@ -330,16 +358,15 @@ class ScanSync(Thread):
             except:
                 db_epoch, ttl = now, 0
             if db_epoch <= now - (ttl * self.cfg['TTL_MULTIPLIER']):
+                ip = key.decode('utf-8').split("^")[1]
                 if self.cfg['LOGGING']:
                     self.logger.info("PFUIFW: TTL Expired for IP {}".format(ip))
-                ip = key.decode('utf-8').split("^")[1]
                 db_pop(self.logger, self.cfg['LOGGING'], self.db, self.table, ip)
 
     def sync_pf_table(self):
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Sync PF Table {} with DB({})".format(self.table, self.cfg['REDIS_DB']))
         try:
-            # keys = self.db.keys(self.table + "*")
             keys = self.db.keys("{}*".format(self.table))
             db_ips = [k.decode('utf-8').split("^")[1] for k in keys]
             lines = list(subprocess.Popen(["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE).stdout)
@@ -363,7 +390,6 @@ class ScanSync(Thread):
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Sync PF File {} with DB({})".format(self.table, self.cfg['REDIS_DB']))
         try:
-            # keys = self.db.keys(self.table + "*")
             keys = self.db.keys("{}*".format(self.table))
             db_ips = [k.decode('utf-8').split("^")[1] for k in keys]
             with open(self.file) as f:
@@ -375,12 +401,12 @@ class ScanSync(Thread):
         for f_ip in f_ips:  # Remove orphaned IPs from pf_file (no Redis record)
             found = next((db_ip for db_ip in db_ips if db_ip == f_ip), False)
             if not found:  # PF File host not found in Redis DB
-                file_pop(self.logger, self.cfg['LOGGING'], self.file, f_ip)
+                file_pop(logger=self.logger, log=self.cfg['LOGGING'], file=self.file, ip=f_ip)
 
         for db_ip in db_ips:  # Load missing IPs into pf_file (active Redis record)
             found = next((f_ip for f_ip in f_ips if f_ip == db_ip), False)
             if not found:  # Redis Key not found in PF File
-                file_push(self.logger, self.cfg['LOGGING'], self.file, [db_ip])
+                file_push(logger=self.logger, log=self.cfg['LOGGING'], file=self.file, ip_list=[db_ip])
 
 
 class PFUI_Firewall(Service):
@@ -397,6 +423,46 @@ class PFUI_Firewall(Service):
         # Load YAML Configuration
         try:
             self.cfg = safe_load(open(CONFIG_LOCATION))
+            if "LOGGING" not in self.cfg:
+                self.cfg['LOGGING'] = True
+            if "LOG_LEVEL" not in self.cfg:
+                self.cfg['LOG_LEVEL'] = "DEBUG"
+            if "SOCKET_LISTEN" not in self.cfg:
+                self.cfg['SOCKET_LISTEN'] = "0.0.0.0"
+            if "SOCKET_PORT" not in self.cfg:
+                self.cfg['SOCKET_PORT'] = 10001
+            if "SOCKET_TIMEOUT" not in self.cfg:
+                self.cfg['SOCKET_TIMEOUT'] = 2
+            if "SOCKET_BUFFER" not in self.cfg:
+                self.cfg['SOCKET_BUFFER'] = 1024
+            if "SOCKET_BACKLOG" not in self.cfg:
+                self.cfg['SOCKET_BACKLOG'] = 5
+            if "REDIS_HOST" not in self.cfg:
+                self.cfg['REDIS_HOST'] = "127.0.0.1"
+            if "REDIS_PORT" not in self.cfg:
+                self.cfg['REDIS_PORT'] = 6379
+            if "REDIS_DB" not in self.cfg:
+                self.cfg['REDIS_DB'] = 1024
+            if "SCAN_PERIOD" not in self.cfg:
+                self.cfg['SCAN_PERIOD'] = 60
+            if "TTL_MULTIPLIER" not in self.cfg:
+                self.cfg['TTL_MULTIPLIER'] = 1
+            if "CTL" not in self.cfg:
+                self.cfg['CTL'] = "IOCTL"
+            if "DEVPF" not in self.cfg:
+                self.cfg['DEVPF'] = "/dev/pf"
+            if "AF4_TABLE" not in self.cfg:
+                print("AF4_TABLE not found in YAML Config File. Exiting.")
+                sys.exit(2)
+            if "AF4_FILE" not in self.cfg:
+                print("AF4_FILE not found in YAML Config File. Exiting.")
+                sys.exit(2)
+            if "AF6_TABLE" not in self.cfg:
+                print("AF6_TABLE not found in YAML Config File. Exiting.")
+                sys.exit(2)
+            if "AF6_FILE" not in self.cfg:
+                print("AF6_FILE not found in YAML Config File. Exiting.")
+                sys.exit(2)
         except Exception as e:
             print("YAML Config File not found or cannot load. {}".format(e))
             sys.exit(2)
@@ -422,10 +488,10 @@ class PFUI_Firewall(Service):
         # Start background scan and sync threads
         try:
             af4_thread = ScanSync(logger=self.logger, cfg=self.cfg, db=self.db,
-                                  af=AF_INET, table=self.cfg['AF4_TABLE'], file=self.cfg['AF4_FILE'])
+                                  af=socket.AF_INET, table=self.cfg['AF4_TABLE'], file=self.cfg['AF4_FILE'])
             af4_thread.start()
             af6_thread = ScanSync(logger=self.logger, cfg=self.cfg, db=self.db,
-                                  af=AF_INET6, table=self.cfg['AF6_TABLE'], file=self.cfg['AF6_FILE'])
+                                  af=socket.AF_INET6, table=self.cfg['AF6_TABLE'], file=self.cfg['AF6_FILE'])
             af6_thread.start()
             self.threads.append(af4_thread)
             self.threads.append(af6_thread)
@@ -437,9 +503,9 @@ class PFUI_Firewall(Service):
 
         # Listen for connections
         if self.cfg['SOCKET_PROTO'] == "UDP":
-            self.soc = socket(AF_INET, SOCK_DGRAM)  # UDP Datagram Socket
-            self.soc.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
-            self.soc.setsockopt(SOL_SOCKET, SO_SNDBUF, 36)
+            self.soc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # UDP Datagram Socket
+            self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
+            self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 36)
             self.soc.settimeout(self.cfg['SOCKET_TIMEOUT'])  # accept() & recv() blocking timeouts
             self.soc.bind((self.cfg['SOCKET_LISTEN'], self.cfg['SOCKET_PORT']))
             while not self.got_sigterm():  # Watch Socket until Signal
@@ -450,16 +516,16 @@ class PFUI_Firewall(Service):
                                kwargs={"proto": "UDP", "data": data, "ip": ip, "port": port}).start()
                     except Exception as e:
                         self.logger.error("PFUIFW: Error starting receiver thread: {}".format(e))
-                except timeout:
+                except socket.timeout:
                     continue
                 except Exception as e:
                     self.logger.error("PFUIFW: UDP socket exception {}".format(e))
                     continue
         elif self.cfg['SOCKET_PROTO'] == "TCP":
-            self.soc = socket(AF_INET, SOCK_STREAM)  # TCP Stream Socket
-            self.soc.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)  # Disable Nagle
-            self.soc.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)  # Fast Listen Socket reuse
-            self.soc.setsockopt(SOL_SOCKET, SO_SNDBUF, 0)  # Zero-size send Buffer (Send immediately)
+            self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # TCP Stream Socket
+            self.soc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
+            self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)  # Fast Listen Socket reuse
+            self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero-size send Buffer (Send immediately)
             self.soc.settimeout(self.cfg['SOCKET_TIMEOUT'])  # accept() & recv() blocking timeouts
             self.soc.bind((self.cfg['SOCKET_LISTEN'], self.cfg['SOCKET_PORT']))
             self.soc.listen(self.cfg['SOCKET_BACKLOG'])
@@ -471,7 +537,7 @@ class PFUI_Firewall(Service):
                                kwargs={"proto": "TCP", "conn": conn, "ip": ip, "port": port}).start()
                     except Exception as e:
                         self.logger.error("PFUIFW: Error starting receiver thread: {}".format(e))
-                except timeout:
+                except socket.timeout:
                     continue
 
         # Shut down
@@ -486,17 +552,32 @@ class PFUI_Firewall(Service):
         For performance, we want entire message sent in a single segment, and a small socket buffer (packet size).
         Ensure SOCKET_BUFFER is small, but large enough for maximum expected record size. """
 
+        def disconnect(proto, soc, conn):
+            if proto == "UDP":
+                try:
+                    soc.sendto(b"ACK", (ip, port))
+                except:
+                    pass  # PFUI_Unbound may not be waiting (non-blocking)
+            elif proto == "TCP":
+                try:
+                    conn.sendall(b"ACK")
+                except:
+                    pass  # PFUI_Unbound may have already disconnected (non-blocking)
+                conn.close()
+
         if self.cfg['LOGGING']:
             stime = time()
 
         if proto == "UDP":
-            data = loads(data)
-            if isinstance(data, str):
-                data = ast.literal_eval(data)
+            try:
+                data = loads(data)
+            except Exception as e:
+                self.logger.error("PFUIFW: Failed to decode {}:{} {} {}".format(ip, port, data, e))
+                disconnect(proto, self.soc, conn)
+                return
         elif proto == "TCP":
-            # Receive all chunks in TCP stream and build data payload
             chunks, stream, data = [], b"", dict()
-            while True:
+            while True:  # Receive all TCP stream chunks and build data
                 try:
                     payload = conn.recv(int(self.cfg['SOCKET_BUFFER']))
                     if payload:
@@ -505,87 +586,96 @@ class PFUI_Firewall(Service):
                         if stream[-3:] == b"EOT":  # End of Transmission
                             try:
                                 data = loads(stream[:-3])
-                                if isinstance(data, str):
-                                    data = ast.literal_eval(data)
                                 break
                             except Exception as e:
                                 self.logger.error("PFUIFW: Failed to decode {}:{} {} {}".format(ip, port, stream, e))
+                                disconnect(proto, self.soc, conn)
+                                return
                     else:
                         self.logger.error("PFUIFW: None payload {}:{}".format(ip, port))
-                        break
-                except timeout:
+                        disconnect(proto, self.soc, conn)
+                        return
+                except socket.timeout:
                     self.logger.error("PFUIFW: Socket recv timeout {}:{}".format(ip, port))
                     break
+        if isinstance(data, str):
+            try:
+                data = ast.literal_eval(data)
+            except Exception as e:
+                self.logger.error("PFUIFW: Failed to parse {} {} {}".format(type(data), data, e))
+                disconnect(proto, self.soc, conn)
+                return
+
         if self.cfg['LOGGING']:
             ntime = time()
             self.logger.info("PFUIFW: Received {} from ({}){}:{}".format(data, proto, ip, port))
 
-        # Work lists
-        af4_addrs = [rr['ip'] for rr in data['AF4'] if rr['ip']]
-        af6_addrs = [rr['ip'].lower() for rr in data['AF6'] if rr['ip']]
+        # Get Valid Data
+        af4_data, af6_data = [], []
+        if isinstance(data, dict):
+            try:
+                af4_data = [(rr['ip'], rr['ttl']) for rr in data['AF4'] if is_ipv4(rr['ip']) and rr['ttl']]
+                af6_data = [(rr['ip'].lower(), rr['ttl']) for rr in data['AF6'] if is_ipv6(rr['ip']) and rr['ttl']]
+            except Exception as e:
+                self.logger.error("PFUIFW: Cannot extract data {} {} {}".format(type(data), data, e))
+                disconnect(proto, self.soc, conn)
+                return
+        else:
+            self.logger.error("PFUIFW: Invalid datatype {} {}".format(type(data), data))
+            disconnect(proto, self.soc, conn)
+            return
+
+        if self.cfg['LOGGING']:
+            vtime = time()
 
         # Update PF Tables
-        if af4_addrs:
-            table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg,
-                       af=AF_INET, table=self.cfg['AF4_TABLE'], ip_list=af4_addrs)
-        if af6_addrs:
-            table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg,
-                       af=AF_INET6, table=self.cfg['AF6_TABLE'], ip_list=af6_addrs)
+        if af4_data:
+            table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg, af=socket.AF_INET,
+                       table=self.cfg['AF4_TABLE'], ip_list=[ip for ip, _ in af4_data])
+        if af6_data:
+            table_push(logger=self.logger, log=self.cfg['LOGGING'], cfg=self.cfg, af=socket.AF_INET6,
+                       table=self.cfg['AF6_TABLE'], ip_list=[ip for ip, _ in af6_data])
+
         if self.cfg['LOGGING']:
             ttime = time()
 
-        # Unblock PFUI_Unbound (DNS Client)
-        if proto == "UDP":
-            try:
-                self.soc.sendto(b"ACK", (ip, port))  # TODO: Assumes self.soc is constant for all threads..!
-            except:
-                pass  # PFUI_Unbound may not be waiting (non-blocking)
-        elif proto == "TCP":
-            try:
-                conn.sendall(b"ACK")
-            except:
-                pass  # PFUI_Unbound may have already disconnected (non-blocking)
-            conn.close()
+        # Unblock DNS Client
+        disconnect(proto, self.soc, conn)
+
         if self.cfg['LOGGING']:
             n1time = time()
 
         # Update Redis DB
-        now = int(time())
-        if af4_addrs:  # Always update Redis DB
-            for addr in data['AF4']:
-                if addr['ttl'] < now:  # TTL is real (new query)
-                    db_push(self.logger, self.cfg['LOGGING'], self.db, self.cfg['AF4_TABLE'],
-                            now, addr['ip'], addr['ttl'])
-                else:  # TTL is Unbound cache response (cache expiry epoch) - update timestamp only
-                    db_push(self.logger, self.cfg['LOGGING'], self.db, self.cfg['AF4_TABLE'],
-                            now, addr['ip'])
-        if af6_addrs:
-            for addr in data['AF6']:
-                if addr['ttl'] < now:
-                    db_push(self.logger, self.cfg['LOGGING'], self.db, self.cfg['AF6_TABLE'],
-                            now, addr['ip'].lower(), addr['ttl'])
-                else:
-                    db_push(self.logger, self.cfg['LOGGING'], self.db, self.cfg['AF6_TABLE'],
-                            now, addr['ip'].lower())
+        if af4_data:  # Always update Redis DB
+            db_push(logger=self.logger, log=self.cfg['LOGGING'], db=self.db,
+                    table=self.cfg['AF4_TABLE'], data=af4_data)
+        if af6_data:
+            db_push(logger=self.logger, log=self.cfg['LOGGING'], db=self.db,
+                    table=self.cfg['AF6_TABLE'], data=af6_data)
+
         if self.cfg['LOGGING']:
             rtime = time()
 
         # Update PF Table Persist Files
-        if af4_addrs:  # Update if new records
-            file_push(self.logger, self.cfg['LOGGING'], self.cfg['AF4_FILE'], af4_addrs)
-        if af6_addrs:
-            file_push(self.logger, self.cfg['LOGGING'], self.cfg['AF6_FILE'], af6_addrs)
+        if af4_data:  # Update if new records
+            file_push(logger=self.logger, log=self.cfg['LOGGING'],
+                      file=self.cfg['AF4_FILE'], ip_list=[ip for ip, _ in af4_data])
+        if af6_data:
+            file_push(logger=self.logger, log=self.cfg['LOGGING'],
+                      file=self.cfg['AF6_FILE'], ip_list=[ip for ip, _ in af6_data])
 
         # Print statistics
         if self.cfg['LOGGING']:
             etime = time()
             tntime = (ntime - stime)*(10**6)  # Network Receive Time
-            tptime = (ttime - ntime)*(10**6)  # PF Table Write Time
+            tvtime = (vtime - ntime)*(10**6)  # Data Valid Time
+            tptime = (ttime - vtime)*(10**6)  # PF Table Write Time
             tn1time = (n1time - ttime)*(10**6)  # Network ACK Time
             trtime = (rtime - n1time)*(10**6)  # Redis Write Time
             tftime = (etime - rtime)*(10**6)  # File Write Time
             ttime = (etime - stime)*(10**6)   # Total Time
             self.logger.info("PFUIFW: Network Latency {0:.2f} microsecs".format(tntime))
+            self.logger.info("PFUIFW: Data Valid Latency {0:.2f} microsecs".format(tvtime))
             self.logger.info("PFUIFW: PF Table Latency {0:.2f} microsecs".format(tptime))
             self.logger.info("PFUIFW: ACK Latency {0:.2f} microsecs".format(tn1time))
             self.logger.info("PFUIFW: Redis Latency {0:.2f} microsecs".format(trtime))

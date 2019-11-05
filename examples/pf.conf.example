@@ -19,7 +19,7 @@ set skip on lo
 # PFUI Blocking mode (recommended); PFUI_Unbound Blocks replies to internal clients until PF tables updated.
 block drop log all
 
-# PFUI Non-Blocking mode (BLOCKING: False); Do not create state for denied traffic.
+# PFUI Non-Blocking mode (BLOCKING: False); EXPERIMENTAL - Do not create state for denied traffic.
 # NB; Client might connect to IP before PFUI Tables are updated with IP (race-condition).
 #block drop log all no state
 
@@ -28,19 +28,21 @@ block drop log all
 #block out quick on egress to <NonRoutable>
 
 
-# Allow internal management access to firewall
+# Allow firewall traffic out
+pass out quick proto { tcp, udp } from self to port { 53, 443, 853 } user _unbound  # Local PFUI_Unbound daemon
+pass out quick proto { tcp, udp } from self to port { 123 } user _ntp   # NTPD
+pass out quick proto udp from self to 255.255.255.255 port { 67, 547 }  # DHCPClient
+
+# Allow firewall traffic in
 pass in quick inet proto icmp from <rfc1918> to self
 pass in quick inet proto tcp from <rfc1918> to self port 22
 
-# Allow Internal PFUI_Unbound servers to perform DNS lookups
+# Allow Corporate PFUI_Unbound servers to perform DNS lookups (not users), and update PFUI_Firewall
+pass quick proto { tcp, udp } from <PFUI_Unbound> to any port { 53, 443, 853 }  # DNS, DoH, DoT
 pass in quick proto tcp from <PFUI_Unbound> to self port 10001  # Example port used by PFUI_Firewall
-pass quick proto { tcp, udp } from <PFUI_Unbound> to any port { 53, 443, 853 }
 
-# Allow local PFUI_Unbound daemon and NTP daemon
-pass out quick proto { tcp, udp } from self to port { 53, 443, 853 } user _unbound
-pass out quick proto { tcp, udp } from self to port { 123 } user _ntp
 
-# Allow access to services which do no use DNS domains (Direct IP Connections - VoIP, SaaS etc)
+# Allow Whitelist Access to services (which do no use DNS domains - VoIP, SaaS etc)
 pass out quick on egress to <WhiteList>
 
 # Allow all other traffic only to IP addresses provided by DNS queries
