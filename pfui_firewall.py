@@ -24,11 +24,12 @@
 
 import ast
 import sys
+import socket
 import logging
 import subprocess
 
-#from socket import *
-import socket
+import ipaddress
+
 from ctypes import *
 from fcntl import ioctl, flock, LOCK_EX, LOCK_UN
 
@@ -181,7 +182,8 @@ def table_push(logger, log: bool, cfg: dict, af: socket.AddressFamily, table: st
         if cfg['CTL'] == "IOCTL":
             try:
                 r = IOCTL(logger, cfg['DEVPF'], DIOCRADDADDRS, af, table, ip_list)
-            except:
+            except Exception as e:
+                logger.error("PFUIFW: IOCTL Failed to install {} into {}, trying PFCTL. {}".format(ip_list, table, e))
                 r = pfctl_add(table, ip_list)
         else:
             r = pfctl_add(table, ip_list)
@@ -200,9 +202,9 @@ def table_pop(logger, log: bool, cfg: dict, af: socket.AddressFamily, table: str
         elif cfg['CTL'] == "PFCTL":
             r = subprocess.run(["pfctl", "-t", table, "-T", "delete", ip], stdout=subprocess.DEVNULL)
             if r.returncode != 0:
-                raise Exception()
+                logger.error("Could not clear {} from {}".format(ip, table))
             else:
-                r = 1
+                return 1
         return r  # Successful commits
     except Exception as e:
         logger.error("PFUIFW: Failed to delete {} from table {}. {}".format(ip, table, e))
@@ -210,7 +212,6 @@ def table_pop(logger, log: bool, cfg: dict, af: socket.AddressFamily, table: str
 
 
 def db_push(logger, log: bool, db, table: str, data: list):
-    # TODO: Add exception and retry handling
     if log:
         logger.info("PFUIFW: Installing {} into Redis DB".format(data))
     now = int(time())
@@ -221,21 +222,19 @@ def db_push(logger, log: bool, db, table: str, data: list):
             if ttl < now:  # Real TTL
                 pipe.hmset(key, {'epoch': now, 'ttl': ttl})
             else:  # Cached entry TTL = Future Expiry Epoch
-                pipe.hmset(key, {'epoch': now})  # TODO: Risk of records with no ttl
+                pipe.hmset(key, {'epoch': now})  # TODO: Risk of records with no ttl..
         pipe.execute()
         return True
     except Exception as e:
-        logger.error("PFUIFW: Failed to install {} into Redis DB. {}".format(ip, e))
+        logger.error("PFUIFW: Failed to install {} as {} into Redis DB. {}".format(ip, key, e))
         return False
 
 
 def db_pop(logger, log: bool, db, table: str, ip: str):
-    # TODO: Add exception and retry handling
     if log:
         logger.info("PFUIFW: Clearing {} from Redis DB".format(ip, db))
     try:
-        key = "{}{}{}".format(table, "^", ip)
-        db.delete(key)
+        db.delete("{}{}{}".format(table, "^", ip))
         return True
     except Exception as e:
         logger.error("PFUIFW: Failed to delete {} from Redis DB. {}".format(ip, e))
@@ -271,8 +270,8 @@ def file_pop(logger, log: bool, file: str, ip: str):
         logger.info("PFUIFW: Clearing {} from file {}".format(ip, file))
     try:
         with open(file, "r") as f:
-            olines = f.readlines()
-        nlines = [l for l in olines if l.strip() not in [ip, ""]]
+            lines = f.readlines()
+        nlines = [l for l in lines if l not in [ip, "\n", ""]]
         with open(file, "w") as f:
             try:
                 flock(f, LOCK_EX)
@@ -286,7 +285,7 @@ def file_pop(logger, log: bool, file: str, ip: str):
         return False
 
 
-def is_ipv4(address):
+def is_ipv4(address: str):
     try:
         socket.inet_pton(socket.AF_INET, address)
     except AttributeError:  # no inet_pton
@@ -300,7 +299,7 @@ def is_ipv4(address):
     return address
 
 
-def is_ipv6(address):
+def is_ipv6(address: str):
     try:
         socket.inet_pton(socket.AF_INET6, address)
     except socket.error:  # not a valid address
@@ -343,22 +342,27 @@ class ScanSync(Thread):
                     sleep(1)
         except Break:
             self.logger.info("PFUIFW: [-] Sync thread closing for {}".format(self.table))
+        except Exception as e:
+            self.logger.error("PFUIFW: Sync thread died for {}! {}".format(self.table, e))
 
     def scan_redis_db(self):
         """ Expire IPs with last update epoch/timestamp older than (TTL * TTL_MULTIPLIER). """
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Scan DB({}) for expiring {} IPs.".format(self.cfg['REDIS_DB'], self.table))
-        keys = self.db.keys("{}*".format(self.table))
+        try:
+            keys = self.db.keys("{}*".format(self.table))
+        except Exception as e:
+            self.logger.error("PFUIFW: Failed to read keys from Redis. {}".format(e))
         now = int(time())
-        for key in keys:
+        for k in keys:
             try:
-                meta = self.db.hgetall(key)
-                ttl = int(meta[b'ttl'].decode('utf-8'))
-                db_epoch = int(meta[b'epoch'].decode('utf-8'))
+                v = self.db.hgetall(k)
+                ttl = int(v[b'ttl'].decode('utf-8'))
+                db_epoch = int(v[b'epoch'].decode('utf-8'))
             except:
                 db_epoch, ttl = now, 0
             if db_epoch <= now - (ttl * self.cfg['TTL_MULTIPLIER']):
-                ip = key.decode('utf-8').split("^")[1]
+                ip = k.decode('utf-8').split("^")[1]
                 if self.cfg['LOGGING']:
                     self.logger.info("PFUIFW: TTL Expired for IP {}".format(ip))
                 db_pop(self.logger, self.cfg['LOGGING'], self.db, self.table, ip)
@@ -372,7 +376,7 @@ class ScanSync(Thread):
             lines = list(subprocess.Popen(["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE).stdout)
             t_ips = [l.decode('utf-8').strip() for l in lines]
         except Exception as e:
-            self.logger.error("PFUIFW: Failed to read stores for {}. Error: {}".format(self.table, e))
+            self.logger.error("PFUIFW: Failed to read and decode data for {}. Error: {}".format(self.table, e))
 
         for t_ip in t_ips:  # Remove orphaned IPs from pf_table (no Redis record)
             found = next((db_ip for db_ip in db_ips if db_ip == t_ip), False)
@@ -510,10 +514,10 @@ class PFUI_Firewall(Service):
             self.soc.bind((self.cfg['SOCKET_LISTEN'], self.cfg['SOCKET_PORT']))
             while not self.got_sigterm():  # Watch Socket until Signal
                 try:
-                    data, (ip, port) = self.soc.recvfrom(1400)
+                    dgram, (ip, port) = self.soc.recvfrom(1400)
                     try:
                         Thread(target=self.receiver_thread,
-                               kwargs={"proto": "UDP", "data": data, "ip": ip, "port": port}).start()
+                               kwargs={"proto": "UDP", "dgram": dgram, "ip": ip, "port": port}).start()
                     except Exception as e:
                         self.logger.error("PFUIFW: Error starting receiver thread: {}".format(e))
                 except socket.timeout:
@@ -546,7 +550,7 @@ class PFUI_Firewall(Service):
         self.db.close()
         self.logger.info("PFUIFW: [-] PFUI_Firewall Service Stopped.")
 
-    def receiver_thread(self, proto, conn=None, data=None, ip=None, port=None):
+    def receiver_thread(self, proto, conn=None, dgram=None, ip=None, port=None):
         """ Receive all data, update PF Table, and update Redis DB entry.
         Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip_ttl }]}
         For performance, we want entire message sent in a single segment, and a small socket buffer (packet size).
@@ -570,13 +574,13 @@ class PFUI_Firewall(Service):
 
         if proto == "UDP":
             try:
-                data = loads(data)
+                data = loads(dgram)
             except Exception as e:
-                self.logger.error("PFUIFW: Failed to decode {}:{} {} {}".format(ip, port, data, e))
+                self.logger.error("PFUIFW: Failed to decode datagram {}:{} {} {}".format(ip, port, dgram, e))
                 disconnect(proto, self.soc, conn)
                 return
         elif proto == "TCP":
-            chunks, stream, data = [], b"", dict()
+            chunks, stream = [], b""
             while True:  # Receive all TCP stream chunks and build data
                 try:
                     payload = conn.recv(int(self.cfg['SOCKET_BUFFER']))
@@ -588,7 +592,8 @@ class PFUI_Firewall(Service):
                                 data = loads(stream[:-3])
                                 break
                             except Exception as e:
-                                self.logger.error("PFUIFW: Failed to decode {}:{} {} {}".format(ip, port, stream, e))
+                                self.logger.error(
+                                    "PFUIFW: Failed to decode stream {}:{} {} {}".format(ip, port, stream, e))
                                 disconnect(proto, self.soc, conn)
                                 return
                     else:
@@ -608,7 +613,7 @@ class PFUI_Firewall(Service):
 
         if self.cfg['LOGGING']:
             ntime = time()
-            self.logger.info("PFUIFW: Received {} from ({}){}:{}".format(data, proto, ip, port))
+            self.logger.info("PFUIFW: Received {} from {}:{} ({})".format(data, ip, port, proto))
 
         # Get Valid Data
         af4_data, af6_data = [], []
@@ -617,11 +622,11 @@ class PFUI_Firewall(Service):
                 af4_data = [(rr['ip'], rr['ttl']) for rr in data['AF4'] if is_ipv4(rr['ip']) and rr['ttl']]
                 af6_data = [(rr['ip'].lower(), rr['ttl']) for rr in data['AF6'] if is_ipv6(rr['ip']) and rr['ttl']]
             except Exception as e:
-                self.logger.error("PFUIFW: Cannot extract data {} {} {}".format(type(data), data, e))
+                self.logger.error("PFUIFW: Cannot extract meta from data {} {} {}".format(type(data), data, e))
                 disconnect(proto, self.soc, conn)
                 return
         else:
-            self.logger.error("PFUIFW: Invalid datatype {} {}".format(type(data), data))
+            self.logger.error("PFUIFW: Invalid datatype received {} {}".format(type(data), data))
             disconnect(proto, self.soc, conn)
             return
 
