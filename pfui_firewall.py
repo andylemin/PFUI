@@ -24,22 +24,25 @@
 
 import ast
 import sys
+import errno
 import socket
 import logging
 import subprocess
 
-import ipaddress
+from os import rename
 
 from ctypes import *
-from fcntl import ioctl, flock, LOCK_EX, LOCK_UN
+from fcntl import ioctl, flock, LOCK_EX, LOCK_NB, LOCK_UN
 
 from time import sleep, time
 from json import loads
 from yaml import safe_load
 from redis import StrictRedis
+
 from threading import Thread, Event
 from service import find_syslog, Service
 from logging.handlers import SysLogHandler
+
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
@@ -220,9 +223,11 @@ def db_push(logger, log: bool, db, table: str, data: list):
         for ip, ttl in data:
             key = "{}{}{}".format(table, "^", ip)
             if ttl < now:  # Real TTL
+                if ttl < 3600:  # Always allow for min 1 hour
+                    ttl = 3600
                 pipe.hmset(key, {'epoch': now, 'ttl': ttl})
             else:  # Cached entry TTL = Future Expiry Epoch
-                pipe.hmset(key, {'epoch': now})  # TODO: Risk of records with no ttl..
+                pipe.hmset(key, {'epoch': now, 'expires': ttl})
         pipe.execute()
         return True
     except Exception as e:
@@ -244,42 +249,55 @@ def db_pop(logger, log: bool, db, table: str, ip: str):
 def file_push(logger, log: bool, file: str, ip_list: list):
     if log:
         logger.info("PFUIFW: Installing {} into file {}".format(ip_list, file))
-    inserts = []
+    unique = []
     try:
-        with open(file, "r+") as f:
-            for ip in ip_list:
-                found = next((l for l in f if "{}\n".format(ip) == l), False)
-                if ip and not found:
-                    inserts.append(ip)
-                    inserts.append("\n")
+        with open(file, "r+") as f:  # Open for reading and writing with pointer at beginning
+            while True:
+                try:
+                    flock(f, LOCK_EX | LOCK_NB)
+                    break
+                except IOError as e:
+                    if e.errno != errno.EAGAIN:
+                        raise  # raise other file access issues
+                    else:
+                        if log:
+                            logger.info("PFUIFW: File {} Locked.".format(file))
+                        sleep(0.001)  # 1ms
+            lines = f.readlines()
+            unique = ["{}\n".format(ip) for ip in ip_list if "{}\n".format(ip) not in lines]  # Check not exists
             try:
-                flock(f, LOCK_EX)
-                f.write("".join(inserts))  # append missing
+                f.write("".join(unique))  # append new
             except Exception as e:
                 logger.error("PFUIFW: f.write error {}".format(e))
-            finally:
-                flock(f, LOCK_UN)
+            flock(f, LOCK_UN)
         return True
     except Exception as e:
-        logger.error("PFUIFW: Failed to install {} to file {}. {}".format(inserts, file, e))
+        logger.error("PFUIFW: Failed to install {} to file {}. {}".format(unique, file, e))
         return False
 
 
 def file_pop(logger, log: bool, file: str, ip: str):
+    # TODO: Implement multiple parallel deletes to reduce disk IO (requires rework of Scanner)
     if log:
         logger.info("PFUIFW: Clearing {} from file {}".format(ip, file))
     try:
-        with open(file, "r") as f:
-            lines = f.readlines()
-        nlines = [l for l in lines if l not in [ip, "\n", ""]]
-        with open(file, "w") as f:
-            try:
-                flock(f, LOCK_EX)
-                f.writelines(nlines)
-            except Exception as e:
-                logger.error("PFUIFW: f.writelines error {}".format(e))
-            finally:
-                flock(f, LOCK_UN)
+        with open(file, "r") as f, open(file + "~", "w") as tmp:
+            lines = [l for l in f if l not in ["{}\n".format(ip), ""]]
+            lines = list(dict.fromkeys(lines))  # Strip dups
+            tmp.writelines(lines)
+            while True:  # Set lock - blocking
+                try:
+                    flock(f, LOCK_EX | LOCK_NB)
+                    break
+                except IOError as e:
+                    if e.errno != errno.EAGAIN:
+                        raise  # raise other file access issues
+                    else:
+                        if log:
+                            logger.info("PFUIFW: File {} Locked.".format(file))
+                        sleep(0.001)  # 1ms
+            rename(file + "~", file)
+            flock(f, LOCK_UN)
     except Exception as e:
         logger.error("PFUIFW: Failed to delete IP {} from {}. {}".format(ip, file, e))
         return False
@@ -349,19 +367,31 @@ class ScanSync(Thread):
         """ Expire IPs with last update epoch/timestamp older than (TTL * TTL_MULTIPLIER). """
         if self.cfg['LOGGING']:
             self.logger.info("PFUIFW: Scan DB({}) for expiring {} IPs.".format(self.cfg['REDIS_DB'], self.table))
+        now = int(time())
         try:
             keys = self.db.keys("{}*".format(self.table))
         except Exception as e:
-            self.logger.error("PFUIFW: Failed to read keys from Redis. {}".format(e))
-        now = int(time())
+            self.logger.error("PFUIFW: Failed to get keys from Redis. {}".format(e))
+            return
         for k in keys:
+            db_last, db_ttl, db_expires = 0, 0, 0
             try:
                 v = self.db.hgetall(k)
-                ttl = int(v[b'ttl'].decode('utf-8'))
-                db_epoch = int(v[b'epoch'].decode('utf-8'))
-            except:
-                db_epoch, ttl = now, 0
-            if db_epoch <= now - (ttl * self.cfg['TTL_MULTIPLIER']):
+                db_last = int(v[b'epoch'].decode('utf-8'))
+                db_ttl = int(v[b'ttl'].decode('utf-8'))
+            except KeyError as e:
+                self.logger.error("PFUIFW: Metadata not found! Trying 'expires' timestamp. {}".format(e))
+                try:
+                    db_expires = int(v[b'expires'].decode('utf-8'))
+                except KeyError as e:
+                    self.logger.error("PFUIFW: No 'expires' found either! {}".format(e))
+                    continue
+                if db_expires is None or db_expires <= now:
+                    db_last, db_ttl = now, 0
+            except Exception as e:
+                self.logger.error("PFUIFW: Exception getting key '{}' values. {}".format(k, e))
+                continue
+            if db_last <= now - (db_ttl * self.cfg['TTL_MULTIPLIER']):
                 ip = k.decode('utf-8').split("^")[1]
                 if self.cfg['LOGGING']:
                     self.logger.info("PFUIFW: TTL Expired for IP {}".format(ip))
@@ -509,7 +539,7 @@ class PFUI_Firewall(Service):
         if self.cfg['SOCKET_PROTO'] == "UDP":
             self.soc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # UDP Datagram Socket
             self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-            self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 36)
+            self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 36)  # 'ACK' = 36bytes
             self.soc.settimeout(self.cfg['SOCKET_TIMEOUT'])  # accept() & recv() blocking timeouts
             self.soc.bind((self.cfg['SOCKET_LISTEN'], self.cfg['SOCKET_PORT']))
             while not self.got_sigterm():  # Watch Socket until Signal
@@ -615,8 +645,7 @@ class PFUI_Firewall(Service):
             ntime = time()
             self.logger.info("PFUIFW: Received {} from {}:{} ({})".format(data, ip, port, proto))
 
-        # Get Valid Data
-        af4_data, af6_data = [], []
+        # Guard Statements
         if isinstance(data, dict):
             try:
                 af4_data = [(rr['ip'], rr['ttl']) for rr in data['AF4'] if is_ipv4(rr['ip']) and rr['ttl']]
