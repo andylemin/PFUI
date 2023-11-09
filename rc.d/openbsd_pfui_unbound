@@ -6,24 +6,24 @@
 
 daemon="/usr/local/sbin/unbound"
 daemon_flags="-c /var/unbound/etc/pfui_unbound.conf"
-#daemon_user="_unbound"  # TODO: run pfui_unbound with _unbound
+daemon_user="root"  # root used only to bind listen port before dropping back to _unbound user
 
 . /etc/rc.d/rc.subr
 
 pexp="/usr/local/sbin/unbound ${daemon_flags}"
 
 rc_pre() {
+	rcctl start redis
 	if grep '^[[:space:]]*auto-trust-anchor-file:' \
             /var/unbound/etc/pfui_unbound.conf > /dev/null 2>&1; then
 		/usr/local/sbin/unbound-anchor -v || true
 	fi
+	/usr/local/sbin/unbound-checkconf /var/unbound/etc/pfui_unbound.conf
 }
 
 rc_start() {
-	/usr/local/sbin/unbound-checkconf /var/unbound/etc/pfui_unbound.conf
 	echo ${rcexec}
-	/usr/local/sbin/unbound-checkconf /var/unbound/etc/pfui_unbound.conf > /dev/null &&
-	    ${rcexec} "/usr/local/sbin/unbound ${daemon_flags}"
+	/usr/local/sbin/unbound ${daemon_flags}
 }
 
 rc_cmd $1

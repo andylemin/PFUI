@@ -3,28 +3,28 @@
 # PFUI_Firewall Configuration (PF Firewall)
 
 # Logging
-LOGGING: True                 # Enable verbose logging ('True'/'False')
+LOGGING: False                # Enable verbose logging ('True'/'False')
 LOG_LEVEL: DEBUG              # 'DEBUG', 'INFO' (testing), 'ERROR' (production)
 
 # Networking
-SOCKET_PROTO: UDP             # UDP or TCP (Dual proto not yet supported)
-SOCKET_LISTEN: 0.0.0.0        # Interface(s) to listen on (0.0.0.0 = All interfaces - not recommended)
+SOCKET_LISTEN: 10.10.1.254    # Interface(s) to listen on (SET TO INSIDE INTERFACE IP)
 SOCKET_PORT: 10001            # Port to listen on (Permit inbound access to this port from PFUI_Unbound instances)
-SOCKET_TIMEOUT: 2             # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall (keep small)
+SOCKET_TIMEOUT: 3             # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall (keep small)
 SOCKET_BUFFER: 1024           # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
 SOCKET_BACKLOG: 5             # How many network connections can be queued up waiting to be accepted
+COMPRESS: True                # Compress and Decompress PFUI_Unbound->PFUI_Firewall data
 
 # Database
 REDIS_HOST: 127.0.0.1         # IP for Redis Server
 REDIS_PORT: 6379              # Port for Redis Server
-REDIS_DB: 0                   # Redis Database ID Number
-SCAN_PERIOD: 60               # Seconds between PF Table scan and scrub cycles
-TTL_MULTIPLIER: 1             # Expire entries from DB after RR TTL * TTL_MULTIPLIER
+REDIS_DB: 9                   # Redis Database ID Number (0-15)
+SCAN_PERIOD: 300              # Seconds between PF Table Scans (scrub expired entries from PF, Persist File & Redis)
+TTL_MULTIPLIER: 4             # Expire entries after RR TTL * TTL_MULTIPLIER (Browsers tend to cache longer than TTL)
 
 # PF Tables & Files
-CTL: IOCTL                    # IOCTL = ioctl kernel interface (requires DEVPF), PFCTL = pfctl shell interface
+CTL: IOCTL                    # IOCTL = ioctl kernel interface (recommended, requires DEVPF), PFCTL = pfctl cli interface
 DEVPF: /dev/pf                # PF ioctl interface
-AF4_TABLE: pfui_ipv4_domains                  # IPv4 PF Table
-AF4_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Table 'Persist' file - Used during PF reload
-AF6_TABLE: pfui_ipv6_domains                  # IPv6 PF Table
-AF6_FILE: /var/spool/pfui_ipv6_domains  # IPv6 PF Table 'Persist' file - Used during PF reload
+AF4_TABLE: pfui_ipv4_domains            # IPv4 PF Table
+AF4_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Persist file - Used during PF reload
+AF6_TABLE: pfui_ipv6_domains            # IPv6 PF Table
+AF6_FILE: /var/spool/pfui_ipv6_domains  # IPv6 PF Persist file - Used during PF reload

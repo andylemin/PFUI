@@ -2,35 +2,36 @@
 #
 # $OpenBSD: unbound,v 1.5 2018/01/11 21:09:26 rpe Exp $
 
-daemon="/usr/local/sbin/pfui_firewall.py"
+daemon="/usr/local/sbin/pfui_firewall"
 daemon_flags=""
+daemon_user="_pfui_firewall"  # TODO Chroot with /dev/pf ioctl access
 
 . /etc/rc.d/rc.subr
 
 pexp="python.* pfui_firewall.*"
 
 rc_start() {
-	$daemon start
-	sleep 3
+        $daemon start
+        sleep 3
 }
 
 rc_stop() {
-	$daemon stop
-	echo "Waiting for all threads to finish" && sleep 3
+        $daemon stop
+        echo "Waiting for all threads to finish" && sleep 3
 }
 
 rc_restart() {
-	$daemon restart
-	sleep 5
+        $daemon restart
+        sleep 5
 }
 
 rc_reload() {
-	$daemon reload
-	sleep 5
+        $daemon reload
+        sleep 5
 }
 
 rc_check() {
-	$daemon check
+        $daemon check
 }
 
 rc_cmd $1
