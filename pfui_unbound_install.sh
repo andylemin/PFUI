@@ -198,24 +198,26 @@ if [[ "$OS" = "OpenBSD" ]]; then
   read -p "Would you like to install the example pfui_unbound.yml (existing will be backed up) y/n: " yn
   if [[ "$yn" = "y" ]]; then
     [ -f "${TARGET}/pfui_unbound.yml" ] && mv "${TARGET}/pfui_unbound.yml" "${TARGET}/pfui_unbound.yml.${HOUR}"
-    install -m 775 -o _unbound -g _unbound "${DIR}"/pfui_unbound.yml ${TARGET}/pfui_unbound.yml
+    install -m 644 -o root -g wheel "${DIR}"/pfui_unbound.yml ${TARGET}/pfui_unbound.yml
   fi
   echo "Default pfui_unbound config: ${TARGET}/pfui_unbound.yml"
 
   # Install PFUI_Unbound module script
-  install -m 775 -o _unbound -g _unbound "${DIR}"/pfui_unbound.py ${TARGET}/pfui_unbound.py
+  install -m 644 -o root -g wheel "${DIR}"/pfui_unbound.py ${TARGET}/pfui_unbound.py
   # Shared modules; pfui_unbound.py adds its own directory to sys.path to reach these
   install -d -m 755 -o root -g wheel ${TARGET}/pfui
   install -m 644 -o root -g wheel "${DIR}"/pfui/__init__.py "${DIR}"/pfui/wire.py ${TARGET}/pfui/
   # Install PFUI_Unbound RC script
-  install -m 555 -o _unbound -g _unbound "${DIR}"/rc.d/openbsd_pfui_unbound /etc/rc.d/pfui_unbound
+  # root-owned: rcctl runs this as root, and a file's owner can always chmod it
+  install -m 555 -o root -g wheel "${DIR}"/rc.d/openbsd_pfui_unbound /etc/rc.d/pfui_unbound
 
   echo
   echo "PFUIDNS: Installing Root Hints and example DNS-BL"
   [ -f "${TARGET}/update_root_hints.sh" ] && mv "${TARGET}/update_root_hints.sh" "${TARGET}/update_root_hints.sh.${HOUR}"
-  install -m 775 -o _unbound -g _unbound "${DIR}"/update_root_hints.sh ${TARGET}/update_root_hints.sh
+  # root-owned: these run from cron with the privilege to write /var/unbound and restart the service
+  install -m 755 -o root -g wheel "${DIR}"/update_root_hints.sh ${TARGET}/update_root_hints.sh
   [ -f "${TARGET}/update_dns_blocklist.sh" ] && mv "${TARGET}/update_dns_blocklist.sh" "${TARGET}/update_dns_blocklist.sh.${HOUR}"
-  install -m 775 -o _unbound -g _unbound "${DIR}"/update_dns_blocklist.sh ${TARGET}/update_dns_blocklist.sh
+  install -m 755 -o root -g wheel "${DIR}"/update_dns_blocklist.sh ${TARGET}/update_dns_blocklist.sh
   echo "New scripts: ${TARGET}/update_root_hints.sh, ${TARGET}/update_dns_blocklist.sh"
 
   # Install Unbound example configuration with PFUI_Unbound enabled

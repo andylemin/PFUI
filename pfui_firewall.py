@@ -42,9 +42,10 @@ from yaml import safe_load
 from socket import AF_INET, AF_INET6, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET, SO_SNDBUF
 from socket import SOCK_STREAM, IPPROTO_TCP, TCP_NODELAY, AddressFamily
 from socket import error as socket_error, timeout as socket_timeout
-from socket import socket, inet_aton, inet_pton
+from socket import socket, inet_pton
 
 from pfui.store import expired_keys
+from pfui.validate import extract
 from pfui.wire import MAX_MESSAGE, WireError, decode, read_frame
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
@@ -409,27 +410,6 @@ def file_pop(logger, log: bool, file: str, ip_list: list):
     except Exception:
         logger.exception(f"PFUIFW: Failed to delete IP(s) {ip_list} from {file}")
         return False
-
-
-def is_ipv4(address: str):
-    try:
-        inet_pton(AF_INET, address)
-    except AttributeError:  # pton not found, use slower aton
-        try:
-            inet_aton(address)
-        except socket_error:
-            return False
-    except socket_error:  # not a valid address
-        return False
-    return address
-
-
-def is_ipv6(address: str):
-    try:
-        inet_pton(AF_INET6, address)
-    except socket_error:  # not a valid address
-        return False
-    return address
 
 
 class ScanSync(Thread):
@@ -923,17 +903,9 @@ class PFUI_Firewall(Service):
             return False
         if isinstance(data, dict):
             try:
-                af4_data = [
-                    (rr["ip"], int(rr["ttl"]), rr.get("qname"))
-                    for rr in data.get("AF4")
-                    if is_ipv4(rr.get("ip")) and rr.get("ttl")
-                ]
-                af6_data = [
-                    (rr["ip"].lower(), int(rr["ttl"]), rr.get("qname"))
-                    for rr in data.get("AF6")
-                    if is_ipv6(rr.get("ip")) and rr.get("ttl")
-                ]
-            except:
+                af4_data = extract(data.get("AF4"), version=4)
+                af6_data = extract(data.get("AF6"), version=6)
+            except Exception:
                 self.logger.exception(
                     f"PFUIFW: Cannot extract PFUI record from data '{data}' {type(data)}"
                 )
