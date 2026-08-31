@@ -51,6 +51,15 @@ A TCP message is exactly one frame:
 UDP datagrams are self-delimiting and carry the payload **alone**, with no
 length prefix.
 
+UDP therefore has a message-size ceiling that TCP does not. A datagram above the
+link MTU fragments and PF commonly drops fragments, so a server MUST NOT be
+expected to receive a large message over UDP however big its receive buffer is.
+`server-python` caps datagrams at 1400 bytes and logs a rejection above that
+rather than handing truncated bytes to the decoder. Note that the ceiling applies
+to the *encoded message*, not the DNS answer it came from: `qname` appears once
+per message but the JSON overhead is real, so an uncompressed message reaches
+1400 bytes at roughly 20 address records. Use TCP for anything but a lab.
+
 ## Payload
 
 The payload is UTF-8 JSON, optionally compressed with lz4 frame format. Whether
@@ -107,6 +116,7 @@ IPv6 spelling.
 | Reply | Meaning |
 |-------|---------|
 | `ACKDATA` | UDP only. The datagram decoded to a valid message. Sent **after** validation, never on receipt. |
+| (silence) | UDP only. A refused datagram gets no reply at all, since its source address is unverified and a reply would make the server a reflector. |
 | `ACKUPDATE` | The PF tables have been updated. The client may release the DNS answer. |
 | any other | Refusal, with a short human-readable reason (`Missing kind`, `Bad frame`, `Bad length`, `Truncated`, `Failed to decode`, `Invalid datatype`, `Empty payload`, `Socket timeout`). |
 

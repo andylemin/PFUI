@@ -51,6 +51,9 @@ from pfui_wire import MAX_MESSAGE, WireError, decode, read_frame
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
+# UDP mode only; see the receive loop in run(). TCP is bounded by MAX_MESSAGE.
+UDP_DGRAM_CEILING = 1400
+
 def db_push(logger, log: bool, db, table: str, data: list, kind: str, cfg: dict = None):
     """Store IP(s) and metadata to Redis database table.
 
@@ -589,7 +592,27 @@ class PFUI_Firewall(Service):
 
             while not self.got_sigterm():  # Watch Socket until TERM
                 try:
-                    dgram, (ip, port) = self.soc.recvfrom(1400)
+                    # KNOWN LIMITATION, UDP mode only: this buffer is the hard
+                    # ceiling on a PFUI message over UDP. A larger datagram is
+                    # truncated by the kernel, the decode then fails, and the
+                    # answer is never whitelisted. Reading one byte past the
+                    # ceiling is what makes that detectable instead of silent.
+                    #
+                    # Raising the buffer would not make large answers work: a
+                    # datagram above the link MTU fragments, and PF commonly
+                    # drops fragments. UDP mode therefore cannot carry the large
+                    # answers TCP handles via MAX_MESSAGE, and this is one reason
+                    # UDP is gated behind ALLOW_INSECURE_UDP. TCP has no such
+                    # limit; use it.
+                    dgram, (ip, port) = self.soc.recvfrom(UDP_DGRAM_CEILING + 1)
+                    if len(dgram) > UDP_DGRAM_CEILING:
+                        self.logger.error(
+                            f"PFUIFW: Datagram from {ip}:{port} exceeds the "
+                            f"{UDP_DGRAM_CEILING} byte UDP ceiling "
+                            f"({len(dgram)}+ bytes); dropping. This answer cannot "
+                            f"be whitelisted over UDP - switch SOCKET_PROTO to TCP."
+                        )
+                        continue
                     # ACKDATA is sent by receiver_thread once the datagram has
                     # decoded to a valid PFUI structure, so this cannot be used
                     # as a blind reflector
@@ -651,11 +674,15 @@ class PFUI_Firewall(Service):
             self.logger.info(f"PFUIFW: Close msg: {msg}")
 
             if proto == "UDP":
-                try:
-                    soc.sendto(msg, (ip, port))
-                except Exception:
-                    pass  # PFUI_Unbound may have closed socket already (non-blocking cache responses)
-                # Do not soc.close(), as this stop listening socket
+                # Only reply to a datagram that validated. A refusal sent to an
+                # unverified source address would make this a reflector, the very
+                # thing that moving ACKDATA after validation prevents.
+                if msg == b"ACKUPDATE":
+                    try:
+                        soc.sendto(msg, (ip, port))
+                    except Exception:
+                        pass  # PFUI_Unbound may have closed socket already (non-blocking cache responses)
+                # Do not soc.close(), as this stops the listening socket
             elif proto == "TCP":
                 try:
                     conn.sendall(msg)

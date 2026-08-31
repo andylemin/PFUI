@@ -16,6 +16,15 @@ now as a larger change to the daemon's startup path.
 On OpenBSD `/dev` is a static on-disk directory, so the mode persists across
 reboots; what resets it is `MAKEDEV` during a release upgrade.
 
+## UDP has a message-size ceiling
+
+`UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a
+buffer that wants raising: a datagram above the link MTU fragments and PF
+commonly drops fragments, so UDP cannot carry the large answers TCP handles. A
+message above the ceiling is logged and dropped rather than truncated silently.
+Accepted because UDP is lab-only and gated behind `ALLOW_INSECURE_UDP`; the fix
+for a real deployment is TCP.
+
 ## Unauthenticated transport
 
 Neither the TCP nor the UDP transport authenticates or encrypts. IPs must reach

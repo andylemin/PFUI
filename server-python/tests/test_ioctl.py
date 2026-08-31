@@ -71,7 +71,7 @@ def test_add_then_delete_reports_counts():
         table=TEST_TABLE,
         addrs=TEST_IPS,
     )
-    assert deleted >= 0  # pfrio_nadd is the add counter; deletes report via ndel
+    assert deleted == len(TEST_IPS)  # Delete count comes from pfrio_ndel
 
 
 def test_ipv6_addresses_are_accepted():
