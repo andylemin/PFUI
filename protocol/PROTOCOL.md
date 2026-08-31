@@ -92,7 +92,19 @@ runs.
 | `AF*[].ttl` | integer | See `kind`. `0` is valid and means do-not-cache. |
 
 `qname` is a property of the message, not of each address: one message carries
-one reply, and every address in it answers the same query. Repeating it per
+one reply, and every address in it answers the same query.
+
+**One message per reply, sent immediately.** A client MUST send the message as
+soon as it has the reply's records, and MUST NOT wait for further replies, batch
+messages, or hold records back for any reason. The whole design depends on the
+addresses reaching the PF table in the microseconds before the client connects
+to them, so any buffering trades away the property PFUI exists to provide. A
+client MUST NOT put records for more than one query name in one message, which
+is what makes a single message-level `qname` correct rather than merely
+convenient.
+
+Several addresses in one message therefore means one DNS reply that carried
+several records, never an accumulation across replies. Repeating it per
 record cost roughly half the uncompressed payload for a 24-address answer (2021
 bytes against 940). Compression hid almost all of that on the wire — 262 bytes
 against 261 — so the saving is mostly in what an uncompressed deployment sends

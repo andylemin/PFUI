@@ -55,6 +55,23 @@ changes as restart-only. Deferred: a restart costs a few seconds of fail-closed
 control plane, so the concurrency cost of swapping config under running threads
 is not yet justified.
 
+## Nothing is buffered on the send path
+
+A reply is encoded and transmitted as soon as the resolver hands it over: one
+reply, one message, no batching, no queue, no coalescing of records across
+queries. `read_rr` reads the rrsets Unbound has already produced and
+`transmit_all` runs on the next line. Several addresses in one message means one
+reply carried several records.
+
+This is a constraint rather than an implementation detail, so PROTOCOL.md states
+it normatively. An optimisation that batched messages would look like a
+bandwidth win and would break the guarantee the whole design rests on: the
+address must be in the PF table before the client connects.
+
+The one place work can wait is the server's receiver pool, which is bounded at
+twice MAX_WORKERS and sheds beyond that rather than queueing without limit. It
+delays a message that has already arrived; it never delays sending one.
+
 ## Persist files are append-only on the hot path
 
 `file_push` appends without reading the file, because it runs per DNS answer
