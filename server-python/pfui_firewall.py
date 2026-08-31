@@ -203,7 +203,7 @@ class ScanSync(Thread):
 
     def join(self, timeout=30):  # Overload join from Thread super
         self.stop_event.set()
-        super().join()
+        super().join(timeout)
 
     def run(self):
         """Start Scanner loop"""
@@ -213,13 +213,17 @@ class ScanSync(Thread):
 
         try:
             while not self.stop_event.is_set():
-                # Clean Redis
-                self.scan_redis_db()
-                # Read Redis for sync. SCAN, never KEYS: KEYS blocks the whole
-                # server, and this runs every SCAN_PERIOD beside a resolver
-                keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
-                self.sync_pf_table(keys=keys)
-                self.sync_pf_file(keys=keys)
+                try:
+                    self.scan_redis_db()
+                    # Each sync reads its own Redis snapshot, after reading the
+                    # store it may delete from; see sync_pf_table
+                    self.sync_pf_table()
+                    self.sync_pf_file()
+                except Exception:
+                    # A transient fault must not end expiry for this table
+                    self.logger.exception(
+                        f"PFUIFW: Sync cycle failed for {self.table}, retrying next scan"
+                    )
                 for _ in range(int(self.cfg["SCAN_PERIOD"])):
                     if self.stop_event.is_set():
                         raise Break
@@ -264,7 +268,7 @@ class ScanSync(Thread):
                 ip_list=expired_ips,
             )
 
-    def sync_pf_table(self, keys=None):
+    def sync_pf_table(self):
         """
         Sync the Redis table with the PF Table. Reads the table with pfctl; DIOCRGETADDRS
         is not implemented (see DECISIONS.md)
@@ -276,27 +280,27 @@ class ScanSync(Thread):
 
         db_ips, t_ips = [], []
         try:
-            # Get all Redis IPs
-            if keys is None:
-                try:
-                    keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
-                except Exception:
-                    self.logger.exception("PFUIFW: Failed to get keys from Redis.")
-                    return
-            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
-
-            # Read the live PF table. pfctl costs a subprocess, but this runs
-            # once per SCAN_PERIOD, not per query (see DECISIONS.md)
+            # Order matters: read the PF table BEFORE Redis. Deletions below are
+            # driven by "in the table but not in Redis", so if Redis were read
+            # first, an IP whitelisted between the two reads would look orphaned
+            # and be deleted despite a live key. Reading Redis last can only
+            # retain an expired entry for one more cycle, which is harmless.
+            # pfctl costs a subprocess, but this runs once per SCAN_PERIOD, not
+            # per query (see DECISIONS.md)
             entries = list(
                 subprocess.Popen(
                     ["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE
                 ).stdout
             )
             t_ips = [l.decode("utf-8").strip() for l in entries]
+
+            keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
+            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
         except Exception:
-            self.logger.error(
-                f"PFUIFW: Failed to read and decode data for {self.table}"
+            self.logger.exception(
+                f"PFUIFW: Failed to read stores for {self.table}, skipping this sync"
             )
+            return  # Never diff against a partial read
 
         # Remove expired IPs from pf_table (Redis record purged)
         db_set, t_set = set(db_ips), set(t_ips)
@@ -323,7 +327,7 @@ class ScanSync(Thread):
                 ip_list=t_ips_add,
             )
 
-    def sync_pf_file(self, keys=None):
+    def sync_pf_file(self):
         """
         Sync the Redis DB with the PF File.
         """
@@ -334,19 +338,18 @@ class ScanSync(Thread):
 
         db_ips, f_ips = [], []
         try:
-            if keys is None:
-                try:
-                    keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
-                except Exception:
-                    self.logger.exception("PFUIFW: Failed to get keys from Redis.")
-                    return
-            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
-
+            # Read the file before Redis, for the reason given in sync_pf_table
             with open(self.file) as f:
                 content = f.readlines()
-            f_ips = [x.strip() for x in content if x != "\n" or ""]
+            f_ips = [x.strip() for x in content if x.strip()]
+
+            keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
+            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
         except Exception:
-            self.logger.error(f"PFUIFW: Failed to read stores for {self.file}")
+            self.logger.exception(
+                f"PFUIFW: Failed to read stores for {self.file}, skipping this sync"
+            )
+            return  # Never diff against a partial read
 
         # Remove expired IPs from PF Table File (Redis record purged).
         # Set-based, so duplicate lines from file_push's appends collapse here.
@@ -559,6 +562,17 @@ class PFUI_Firewall(Service):
                         conn.close()
                         self.logger.exception("PFUIFW: Error starting receiver thread")
                 except socket_timeout:
+                    continue
+                except socket_error as e:
+                    # accept() can fail transiently: ECONNABORTED when a peer
+                    # goes away, EMFILE/ENFILE under fd pressure. Neither is a
+                    # reason to stop serving.
+                    self.logger.error(f"PFUIFW: accept() failed, continuing. {e}")
+                    sleep(0.1)
+                    continue
+                except Exception:
+                    self.logger.exception("PFUIFW: Unexpected accept() error, continuing")
+                    sleep(0.5)
                     continue
 
         # UDP is experimental and spoofable. The Unbound module runs per lookup, so
