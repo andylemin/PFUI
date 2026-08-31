@@ -1,0 +1,12 @@
+# PFUI framing conformance vectors. See ../PROTOCOL.md
+# name	frame_hex	expect	payload_hex
+minimal_payload	000000027b7d	ok	7b7d
+json_uncompressed	0000001f7b226b696e64223a227272222c22414634223a5b5d2c22414636223a5b5d7d	ok	7b226b696e64223a227272222c22414634223a5b5d2c22414636223a5b5d7d
+payload_containing_eot	0000000b7b2271223a22454f54227d	ok	7b2271223a22454f54227d
+payload_all_zero_bytes	0000001000000000000000000000000000000000	ok	00000000000000000000000000000000
+payload_high_bytes	00000010f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff	ok	f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff
+length_zero	00000000	length	-
+length_over_max	0010000178787878	length	-
+header_short	000001	short	-
+payload_truncated	00000008616263	truncated	-
+empty_input	-	short	-

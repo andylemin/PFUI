@@ -31,7 +31,7 @@ CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
 # installer puts the shared pfui/ package beside this config, so derive it from
 # there: one hardcoded location, same as CONFIG_LOCATION itself.
 sys.path.insert(0, dirname(CONFIG_LOCATION))
-from pfui.wire import encode_payload, frame  # noqa: E402
+from pfui_wire import encode_payload, frame  # noqa: E402
 
 from socket import (
     AF_INET,

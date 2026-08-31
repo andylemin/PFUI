@@ -9,12 +9,12 @@ from threading import Thread
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+COMPONENT = Path(__file__).resolve().parent.parent
 
 
 def _load_daemon():
     """Import pfui_firewall without its OpenBSD-only runtime deps."""
-    sys.path.insert(0, str(REPO))
+    sys.path.insert(0, str(COMPONENT))
     for missing in ("redis", "service"):
         if missing not in sys.modules:
             module = type(sys)(missing)
@@ -25,7 +25,7 @@ def _load_daemon():
                 module.find_syslog = lambda: None
             sys.modules[missing] = module
     spec = importlib.util.spec_from_file_location(
-        "pfui_firewall", REPO / "pfui_firewall.py"
+        "pfui_firewall", COMPONENT / "pfui_firewall.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
