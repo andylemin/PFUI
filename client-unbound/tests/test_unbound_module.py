@@ -215,3 +215,28 @@ def test_rrsig_only_rrset_yields_nothing(plugin):
         rrsets = [FakeRRset()]
 
     assert plugin.read_rr(FakeRep(), "sig-only.example.com.") is False
+
+
+def test_zero_udp_retry_does_not_raise(plugin):
+    """UDP_RETRY: 0 skips the loop entirely; the summary log must still work."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class Soc:
+        def sendto(self, *a):
+            raise AssertionError("must not transmit when retry is 0")
+
+    assert plugin.udp_transmit(Soc(), b"x", "127.0.0.1", 10001, retry=0) is None
+
+
+def test_unknown_event_sets_module_error_even_if_logging_fails(plugin):
+    """The debug dump derefs qstate.return_msg; a failure there must not stop
+    the module from reporting MODULE_ERROR back to Unbound."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class QState:
+        return_msg = None  # logger() will raise on this
+        ext_state = {}
+
+    qstate = QState()
+    assert plugin.operate(0, 999, qstate, None) is True
+    assert qstate.ext_state[0] == plugin.MODULE_ERROR

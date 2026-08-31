@@ -191,6 +191,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
 
 def udp_transmit(soc, data, ip, port, retry=1):
     tries = 0
+    msg = None  # retry may be 0, and the summary below reads this
     while tries < retry:
         try:
             log_info(f"PFUIDNS: UDP Transmitting {len(data)} bytes")
@@ -237,6 +238,7 @@ def udp_transmit_close(data, ip, port, blocking):
 
     # transmit pf firewall data
     reply = udp_transmit(soc, data, ip, port, int(pfui_cfg["UDP_RETRY"]))
+    breaker_record(ip, port, ok=(reply == b"ACKDATA"))
 
     # wait for pf firewall update
     if blocking:  # Wait for secondary ACKUPDATE
@@ -296,9 +298,11 @@ def tcp_transmit_close(data, ip, port, blocking):
     )  # Zero size Buffer (Zero buff, Send immediately?)
     # s.setsockopt(SOL_SOCKET, SO_SNDBUF, getsizeof(data))  # Exact send buff
 
+    sent = False
     try:
         conn.connect((ip, port))
         conn.sendall(frame(data))
+        sent = True
         breaker_record(ip, port, ok=True)
     except TIMEOUT:
         breaker_record(ip, port, ok=False)
@@ -315,7 +319,7 @@ def tcp_transmit_close(data, ip, port, blocking):
         log_err(f"PFUIDNS: Unknown TCP Socket Exception! {e}")
 
     try:
-        if blocking:
+        if blocking and sent:  # Nothing to acknowledge if the send failed
             reply = conn.recv(36)  # Wait for pfui_firewall to ACK
             if reply != b"ACKUPDATE":
                 # The firewall replies with a reason when it refuses a message,
@@ -502,8 +506,11 @@ def operate(id, event, qstate, qdata):
         f"pythonmod: MODULE_ERROR. Unknown EVENT; id {id}, event {event}, qstate {qstate}"
     )
     if qstate:
-        logger(qstate)
-    qstate.ext_state[id] = MODULE_ERROR
+        try:
+            logger(qstate)  # Best effort: derefs qstate.return_msg, which may be None
+        except Exception as e:
+            log_err(f"pythonmod: could not log qstate: {e}")
+        qstate.ext_state[id] = MODULE_ERROR
     return True
 
 
