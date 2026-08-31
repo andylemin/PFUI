@@ -27,6 +27,15 @@ jobs:
       - name: Check both daemons parse
         run: python -m py_compile server-python/pfui_firewall.py client-unbound/pfui_unbound.py
 
+  server-c:
+    # Builds the C framing implementation and runs the same conformance vectors
+    # as the Python one, so the two cannot drift apart unnoticed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run protocol vectors
+        run: make -C server-c test
+
   shell:
     runs-on: ubuntu-latest
     steps:
