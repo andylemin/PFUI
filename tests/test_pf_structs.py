@@ -25,3 +25,28 @@ def test_pfra_states_field_exists():
     addr = pfr_addr()
     addr.pfra_states = 0
     assert dict(pfr_addr._fields_)["pfra_states"] is not None
+
+
+def test_unparseable_address_raises_before_touching_dev_pf():
+    """R4: a failed inet_pton used to leave a zeroed struct, which would have
+    installed 0.0.0.0 (or ::) into the table. The structs are built before the
+    device is opened, so this raises without needing /dev/pf."""
+    from socket import AF_INET
+
+    import pytest
+
+    from pfui.pf_ioctl import IOCTL
+
+    class Log:
+        def info(self, *a, **k):
+            pass
+
+    with pytest.raises(OSError):
+        IOCTL(
+            logger=Log(),
+            dev="/nonexistent/dev/pf",
+            iocmd=DIOCRADDADDRS,
+            af=AF_INET,
+            table="t",
+            addrs=["definitely-not-an-ip"],
+        )

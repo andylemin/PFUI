@@ -112,7 +112,7 @@ def db_pop(logger, log: bool, db, table: str, ip_list: list):
             pipe.delete(f"{table}^{ip}")
         pipe.execute()
         return True
-    except:
+    except Exception:
         logger.exception(f"PFUIFW: Failed to delete {ip_list} from Redis")
         return False
 
@@ -293,7 +293,7 @@ class ScanSync(Thread):
                 ).stdout
             )
             t_ips = [l.decode("utf-8").strip() for l in entries]
-        except:
+        except Exception:
             self.logger.error(
                 f"PFUIFW: Failed to read and decode data for {self.table}"
             )
@@ -345,7 +345,7 @@ class ScanSync(Thread):
             with open(self.file) as f:
                 content = f.readlines()
             f_ips = [x.strip() for x in content if x != "\n" or ""]
-        except:
+        except Exception:
             self.logger.error(f"PFUIFW: Failed to read stores for {self.file}")
 
         # Remove expired IPs from PF Table File (Redis record purged).
@@ -472,7 +472,7 @@ class PFUI_Firewall(Service):
                 int(self.cfg["REDIS_PORT"]),
                 int(self.cfg["REDIS_DB"]),
             )
-        except:
+        except Exception:
             self.logger.exception("PFUIFW: Failed to connect to Redis DB.")
             sys.exit(3)
 
@@ -498,7 +498,7 @@ class PFUI_Firewall(Service):
             )
             af6_thread.start()
             self.threads.append(af6_thread)
-        except:
+        except Exception:
             self.logger.exception("PFUIFW: Scanning thread failed.")
             sys.exit(4)
         self.logger.info("PFUIFW: [+] PFUI_Firewall Service Started.")
@@ -639,13 +639,13 @@ class PFUI_Firewall(Service):
             if proto == "UDP":
                 try:
                     soc.sendto(msg, (ip, port))
-                except:
+                except Exception:
                     pass  # PFUI_Unbound may have closed socket already (non-blocking cache responses)
                 # Do not soc.close(), as this stop listening socket
             elif proto == "TCP":
                 try:
                     conn.sendall(msg)
-                except:
+                except Exception:
                     pass  # PFUI_Unbound may have closed connection already (non-blocking cache responses)
                 finally:
                     conn.close()

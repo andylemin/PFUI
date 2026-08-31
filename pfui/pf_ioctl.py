@@ -97,17 +97,16 @@ def IOCTL(logger, dev: str, iocmd, af: AddressFamily, table: str, addrs: list):
     """
 
     def pfr_addr_struct(logger, af: AddressFamily, addr: str):
-        """Convert this object to a pfr_addr structure."""
+        """Convert this object to a pfr_addr structure.
+
+        Raises on an unparseable address rather than returning a zeroed struct,
+        which would have installed 0.0.0.0 or :: into the table.
+        """
         a = pfr_addr()
 
-        try:
-            addr = inet_pton(af, str(addr))  # IP string to packed binary format
-            # Copy Addr to v6
-            memmove(
-                a.pfra_ip6addr, c_char_p(addr), len(addr)
-            )  # (dst, <- src, bytes count)
-        except Exception as e:
-            logger.info(f"Error building struct for ip {addr} {e}")
+        packed = inet_pton(af, str(addr))  # IP string to packed binary format
+        # Copy Addr to v6
+        memmove(a.pfra_ip6addr, c_char_p(packed), len(packed))  # (dst, <- src, count)
 
         a.pfra_af = af
         if af == AF_INET:
@@ -163,17 +162,19 @@ def table_push(
 ):
     """
     Install IP(s) into PF Table, Latency sensitive operation.
-    Returns the number of IPs successfully pushed onto table
+    Returns the number of IPs successfully pushed onto the table; 0 on failure,
+    never None.
     """
 
     def pfctl_add_addr(table, ip_list):
+        """Returns the number of IPs pushed, 0 on failure."""
         r = subprocess.run(
             ["pfctl", "-t", table, "-T", "add"] + ip_list, stdout=subprocess.DEVNULL
         )
         if r.returncode != 0:  # Non-zero error codes
             logger.error(f"PFCTL push failed: {r}")
-        else:
-            return len(ip_list)
+            return 0
+        return len(ip_list)
 
     if log:
         logger.info(f"PFUIFW: Adding '{ip_list}' to PF Table {table}")
@@ -208,17 +209,19 @@ def table_pop(
 ):
     """
     Remove IP(s) from PF Table.
-    Returns the number of IPs successfully popped from table
+    Returns the number of IPs successfully popped from the table; 0 on failure,
+    never None.
     """
 
     def pfctl_del_addr(table, ip_list):
+        """Returns the number of IPs popped, 0 on failure."""
         r = subprocess.run(
             ["pfctl", "-t", table, "-T", "delete"] + ip_list, stdout=subprocess.DEVNULL
         )
         if r.returncode != 0:  # Non-zero error codes
             logger.error(f"PFCTL pop failed: {r}")
-        else:
-            return 1
+            return 0
+        return len(ip_list)
 
     if log:
         logger.info(f"PFUIFW: Clearing '{ip_list}' from PF Table {table}")
