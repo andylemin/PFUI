@@ -45,6 +45,9 @@ from socket import SOCK_STREAM, IPPROTO_TCP, TCP_NODELAY, AddressFamily
 from socket import error as socket_error, timeout as socket_timeout
 from socket import socket, inet_aton, inet_pton
 
+from pfui.store import expired_keys
+from pfui.wire import MAX_MESSAGE, WireError, decode, read_frame
+
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
 # Constants
@@ -285,26 +288,43 @@ def table_pop(
         return 0
 
 
-def db_push(logger, log: bool, db, table: str, data: list):
-    """Store IP(s) and metadata to Redis database table"""
+def db_push(logger, log: bool, db, table: str, data: list, kind: str):
+    """Store IP(s) and metadata to Redis database table.
+
+    'kind' comes from the sender, which knows whether it read a relative RR TTL
+    ("rr") or an absolute Unbound cache-expiry timestamp ("cache"). The losing
+    field is deleted because hmset merges, and a key holding both would be
+    ambiguous to the expiry scan.
+    """
 
     if log:
-        logger.info(f"PFUIFW: Storing '{data}' to Redis")
+        logger.info(f"PFUIFW: Storing '{data}' ({kind}) to Redis")
 
     try:
         pipe = db.pipeline()
         now = int(time())
         for ip, ttl, qname in data:
             key = f"{table}^{ip}"
-            if ttl < 604800:  # DNS TTL from RR, else Unbound cache expire tstamp
-                if ttl < 3600:
-                    ttl = 3600  # min ttl = 1 hour
-                pipe.hmset(key, {"epoch": now, "ttl": ttl, "qname": qname})
-            else:  # Cached result; TTL = Expiry time (dont overwrite ttl), update 'epoch' and 'expires'
-                pipe.hmset(key, {"epoch": now, "expires": ttl, "qname": qname})
+            if kind == "cache":
+                pipe.hmset(
+                    key,
+                    {"epoch": now, "kind": "cache", "expires": int(ttl), "qname": qname},
+                )
+                pipe.hdel(key, "ttl")
+            else:
+                pipe.hmset(
+                    key,
+                    {
+                        "epoch": now,
+                        "kind": "rr",
+                        "ttl": max(int(ttl), 3600),  # min ttl = 1 hour
+                        "qname": qname,
+                    },
+                )
+                pipe.hdel(key, "expires")
         pipe.execute()
         return True
-    except:
+    except Exception:
         logger.exception(f"PFUIFW: Failed to store {data} to Redis")
         return False
 
@@ -468,7 +488,7 @@ class ScanSync(Thread):
             self.logger.exception(f"PFUIFW: Sync thread died for {self.table}! {e}")
 
     def scan_redis_db(self):
-        """Expire IPs with last update epoch/timestamp older than (TTL * TTL_MULTIPLIER)."""
+        """Expire IPs whose metadata says they are past their TTL or cache expiry."""
 
         if self.cfg["LOGGING"]:
             self.logger.info(
@@ -476,40 +496,21 @@ class ScanSync(Thread):
             )
 
         try:
-            keys = self.db.keys(f"{self.table}*")
-        except:
-            self.logger.exception("PFUIFW: Failed to get keys from Redis.")
+            expired_ips = expired_keys(
+                db=self.db,
+                table=self.table,
+                now=int(time()),
+                multiplier=self.cfg["TTL_MULTIPLIER"],
+            )
+        except Exception:
+            # Survive a transient Redis fault; the next SCAN_PERIOD retries
+            self.logger.exception(
+                f"PFUIFW: Failed to scan Redis for {self.table}, retrying next scan"
+            )
             return
 
-        now = int(time())
-        expired_ips = []
-        for k in keys:
-            # Check key is expired
-            db_last, db_ttl, db_expires = 0, 0, None
-            v = None
-            try:
-                v = self.db.hgetall(k)
-                db_last = int(v[b"epoch"].decode("utf-8"))
-                db_ttl = int(v[b"ttl"].decode("utf-8"))
-            except KeyError as e:
-                self.logger.error(
-                    f"PFUIFW: Metadata not found! k={k} Trying 'expires' timestamp. {e}"
-                )
-                try:
-                    db_expires = int(v[b"expires"].decode("utf-8"))
-                except KeyError as e:
-                    self.logger.error(f"PFUIFW: No 'expires' meta found either! {e}")
-                if db_expires is None or db_expires <= now:  # Purge
-                    db_last, db_ttl = now, 0
-            except Exception as e:
-                self.logger.error(f"PFUIFW: Exception getting key '{k}' values. {e}")
-                db_last, db_ttl = now, 0
-
-            if db_last + (db_ttl * self.cfg["TTL_MULTIPLIER"]) <= now:
-                ip = k.decode("utf-8").split("^")[1]
-                if self.cfg["LOGGING"]:
-                    self.logger.info(f"PFUIFW: TTL Expired for IP {ip}")
-                expired_ips.append(ip)
+        if expired_ips and self.cfg["LOGGING"]:
+            self.logger.info(f"PFUIFW: TTL Expired for IPs {expired_ips}")
 
         # Purge if expired
         if expired_ips:
@@ -661,7 +662,7 @@ class PFUI_Firewall(Service):
             if "REDIS_PORT" not in self.cfg:
                 self.cfg["REDIS_PORT"] = 6379
             if "REDIS_DB" not in self.cfg:
-                self.cfg["REDIS_DB"] = 1024
+                self.cfg["REDIS_DB"] = 0  # Valid range is 0-15
             if "SCAN_PERIOD" not in self.cfg:
                 self.cfg["SCAN_PERIOD"] = 60
             if "TTL_MULTIPLIER" not in self.cfg:
@@ -868,46 +869,48 @@ class PFUI_Firewall(Service):
         # Read data from network
         data = None
         if proto == "TCP":
-            chunks, stream = [], b""
-            while True:  # Receive all TCP stream chunks and build contiguous data
-                try:
-                    payload = conn.recv(int(self.cfg["SOCKET_BUFFER"]))
-                    if payload:
-                        chunks.append(payload)
-                        stream = b"".join(
-                            chunks[-2:]
-                        )  # 'EOT' Footer may cross last chunk boundary
-                        if stream[-3:] == b"EOT":  # End of Transmission
-                            try:
-                                stream = stream[:-3]  # Drop EOT
-                                if self.cfg["COMPRESS"]:  # Decompress
-                                    stream = lz4.frame.decompress(stream)
-                                data = loads(stream)  # Load JSON
-                                break
-                            except:
-                                self.logger.exception(
-                                    f"PFUIFW: Failed to decode stream, disconnecting {ip}:{port}: '{stream}'"
-                                )
-                                disconnect(
-                                    proto, self.soc, conn, msg="Failed to decode"
-                                )
-                                return
-                    else:
-                        self.logger.error(
-                            f"PFUIFW: Empty payload, disconnecting {ip}:{port}"
-                        )
-                        disconnect(proto, self.soc, conn, msg="Empty payload")
-                        return
-                except socket_timeout:
-                    self.logger.error(f"PFUIFW: Socket recv timeout {ip}:{port}")
-                    break
+
+            def recv_exactly(n):
+                """Read exactly n bytes; None if the peer closed first."""
+                buf = bytearray()
+                while len(buf) < n:
+                    chunk = conn.recv(min(n - len(buf), int(self.cfg["SOCKET_BUFFER"])))
+                    if not chunk:
+                        return None
+                    buf += chunk
+                return bytes(buf)
+
+            try:
+                data = read_frame(recv_exactly, compress=self.cfg["COMPRESS"])
+                if data is None:
+                    self.logger.error(
+                        f"PFUIFW: Empty payload, disconnecting {ip}:{port}"
+                    )
+                    disconnect(proto, self.soc, conn, msg="Empty payload")
+                    return
+            except socket_timeout:
+                self.logger.error(f"PFUIFW: Socket recv timeout {ip}:{port}")
+                disconnect(proto, self.soc, conn, msg="Socket timeout")
+                return
+            except WireError as e:
+                self.logger.error(
+                    f"PFUIFW: Bad frame from {ip}:{port}, disconnecting. {e}"
+                )
+                disconnect(proto, self.soc, conn, msg="Bad frame")
+                return
+            except Exception:
+                self.logger.exception(
+                    f"PFUIFW: Failed to decode stream, disconnecting {ip}:{port}"
+                )
+                disconnect(proto, self.soc, conn, msg="Failed to decode")
+                return
 
         elif proto == "UDP":
             try:
-                if self.cfg["COMPRESS"]:
-                    dgram = lz4.frame.decompress(dgram)
-                data = loads(dgram)
-            except:
+                if len(dgram) > MAX_MESSAGE:
+                    raise WireError(f"datagram of {len(dgram)} bytes too large")
+                data = decode(dgram, compress=self.cfg["COMPRESS"])
+            except Exception:
                 self.logger.exception(
                     f"PFUIFW: Failed to decode datagram {ip}:{port} {dgram}"
                 )
@@ -920,6 +923,14 @@ class PFUI_Firewall(Service):
 
         # Input Request
         af4_data, af6_data = [], []
+        kind = data.get("kind") if isinstance(data, dict) else None
+        if kind not in ("rr", "cache"):
+            self.logger.error(
+                f"PFUIFW: Message has no valid 'kind' ({kind}), dropping. "
+                f"PFUI_Unbound must be running the same release as PFUI_Firewall."
+            )
+            disconnect(proto, self.soc, conn, msg="Missing kind")
+            return False
         if isinstance(data, dict):
             try:
                 af4_data = [
@@ -989,6 +1000,7 @@ class PFUI_Firewall(Service):
                 db=self.db,
                 table=self.cfg["AF4_TABLE"],
                 data=af4_data,
+                kind=kind,
             )
         if af6_data:
             db_push(
@@ -997,6 +1009,7 @@ class PFUI_Firewall(Service):
                 db=self.db,
                 table=self.cfg["AF6_TABLE"],
                 data=af6_data,
+                kind=kind,
             )
 
         if self.cfg["LOGGING"]:

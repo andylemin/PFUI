@@ -63,6 +63,9 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo "PFUIFW: Installing PFUI Firewall Service (will backup any existing pfui_firewall configuration)"
   install -m 755 -o root -g wheel pfui_firewall.py /usr/local/sbin/pfui_firewall
+  # Shared modules must sit beside the daemon; a script's own directory is sys.path[0]
+  install -d -m 755 -o root -g wheel /usr/local/sbin/pfui
+  install -m 644 -o root -g wheel pfui/__init__.py pfui/wire.py pfui/store.py /usr/local/sbin/pfui/
   # TODO Get this running with _pfui_firewall user
   # chmod a+s /usr/local/sbin/pfui_firewall
   chmod 775 /var/run

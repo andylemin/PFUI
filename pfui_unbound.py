@@ -18,11 +18,15 @@ declared here and called by Unbound depending on EVENT type
 :param rr: DNS Resource Record
 """
 
-import lz4.frame
-from json import dumps
+import sys
+from os.path import dirname, realpath
 from sys import exit, getsizeof
 from time import time
 from yaml import safe_load
+
+# Unbound embeds the interpreter, so this module's directory is not on sys.path
+sys.path.insert(0, dirname(realpath(__file__)))
+from pfui.wire import encode_payload, frame  # noqa: E402
 
 from socket import (
     AF_INET,
@@ -106,9 +110,13 @@ def logger(qstate):
     log_info("-" * 100)
 
 
-def read_rr(rep=None, qname_str=""):
+def read_rr(rep=None, qname_str="", from_cache=False):
     """PFUI: Inspects RR response data, extracts IPs and TTLs, and returns PFUI Firewall data structure.
-    Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl }]}
+    Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl }],
+                     'kind': 'rr'|'cache'}
+    On the cache path Unbound reports rr_ttl as an absolute expiry timestamp, on
+    the reply path as a relative TTL. 'kind' records which, so the firewall does
+    not have to guess from the magnitude.
     """
 
     if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
@@ -167,7 +175,11 @@ def read_rr(rep=None, qname_str=""):
                         )
 
     if ipv4_resps or ipv6_resps:
-        return {"AF4": ipv4_resps, "AF6": ipv6_resps}
+        return {
+            "AF4": ipv4_resps,
+            "AF6": ipv6_resps,
+            "kind": "cache" if from_cache else "rr",
+        }
     else:
         return False
 
@@ -249,7 +261,7 @@ def tcp_transmit_close(data, ip, port, blocking):
 
     try:
         conn.connect((ip, port))
-        conn.sendall(data + b"EOT")
+        conn.sendall(frame(data))
     except TIMEOUT:
         log_err(
             "PFUIDNS: TCP Socket Timeout to firewall! Check pfui_firewall is running."
@@ -288,10 +300,8 @@ def transmit_all(pfui_dict, blocking=True):
             if pfui_cfg["LOGGING"]:
                 log_info(f"PFUIDNS: Sending '{pfui_dict}' to {fw['HOST']}:{fw['PORT']}")
 
-            # Encode JSON bytes, and (optional) Compress
-            pfui_data = bytes(dumps(pfui_dict), "utf8")
-            if pfui_cfg["COMPRESS"]:
-                pfui_data = lz4.frame.compress(pfui_data)
+            # JSON, optionally lz4 compressed. TCP adds a length prefix below
+            pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
 
             # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
 
@@ -328,7 +338,7 @@ def inplace_cache_callback(
         )
 
     if rep is not None:
-        pfui_msg = read_rr(rep, qinfo.qname_str)
+        pfui_msg = read_rr(rep, qinfo.qname_str, from_cache=True)
         if pfui_msg:
             transmit_all(pfui_msg, blocking=False)
 

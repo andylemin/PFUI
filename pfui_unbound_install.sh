@@ -204,6 +204,9 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   # Install PFUI_Unbound module script
   install -m 775 -o _unbound -g _unbound "${DIR}"/pfui_unbound.py ${TARGET}/pfui_unbound.py
+  # Shared modules; pfui_unbound.py adds its own directory to sys.path to reach these
+  install -d -m 755 -o root -g wheel ${TARGET}/pfui
+  install -m 644 -o root -g wheel "${DIR}"/pfui/__init__.py "${DIR}"/pfui/wire.py ${TARGET}/pfui/
   # Install PFUI_Unbound RC script
   install -m 555 -o _unbound -g _unbound "${DIR}"/rc.d/openbsd_pfui_unbound /etc/rc.d/pfui_unbound
 
