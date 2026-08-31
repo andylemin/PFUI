@@ -23,19 +23,18 @@
     https://man.openbsd.org/ioctl.2 https://docs.python.org/2/library/fcntl.html
 """
 
-import errno
 import logging
+import os
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from ctypes import *
-from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock, ioctl
-from json import loads
+from fcntl import LOCK_EX, LOCK_UN, flock, ioctl
 from logging.handlers import SysLogHandler
-from os import rename
 from threading import Event, Thread
 from time import sleep, time
 
-import lz4.frame
 from redis import StrictRedis
 from service import Service, find_syslog
 from yaml import safe_load
@@ -159,7 +158,7 @@ def IOCTL(logger, dev: str, iocmd, af: AddressFamily, table: str, addrs: list):
         a.pfra_fback = 0
         a.pfra_ifname = b""
         a.pfra_type = PFRKE_PLAIN
-        a.states = 0
+        a.pfra_states = 0
         a.pfra_weight = 0
         return a
 
@@ -346,77 +345,68 @@ def db_pop(logger, log: bool, db, table: str, ip_list: list):
         return False
 
 
+@contextmanager
+def _locked(path: str):
+    """Exclusive cross-process lock via a sidecar .lock file, which is never
+    truncated or renamed, so the lock cannot be lost with the file it guards.
+    """
+    fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o640)
+    try:
+        flock(fd, LOCK_EX)  # Blocking; the kernel queues waiters
+        yield
+    finally:
+        flock(fd, LOCK_UN)
+        os.close(fd)
+
+
 def file_push(logger, log: bool, file: str, ip_list: list):
-    """Add IP(s) to PF Table's File"""
+    """Append IP(s) to PF Table's File.
+
+    Called per DNS answer, with every receiver thread serialised on one lock, so
+    it must not read the file. Duplicate lines are harmless (PF loads a table as
+    a set) and file_pop's rewrite collapses them on the next scan.
+    """
     if log:
         logger.info(f"PFUIFW: Adding '{ip_list}' to PF Table File {file}")
 
-    unique = []
     try:
-        with open(file, "r+") as f:  # Reading and writing with pointer at beginning
-            # Read file without lock
-            lines = f.readlines()
-            missing = [
-                f"{ip}\n" for ip in ip_list if f"{ip}\n" not in lines
-            ]  # Check not exists
-
-            if missing:  # Get exclusive file lock
-                while True:
-                    try:
-                        flock(f, LOCK_EX | LOCK_NB)
-                        break
-                    except IOError as e:
-                        if e.errno != errno.EAGAIN:
-                            raise  # raise other file access issues
-                        else:
-                            if log:
-                                logger.info(
-                                    f"PFUIFW: PF Table File {file} already Locked. Waiting 2ms"
-                                )
-                            sleep(0.01)  # Wait 2ms
-                try:
-                    f.write("".join(missing))  # append lines
-                except Exception as e:
-                    logger.exception(f"PFUIFW: f.write exception: {e}")
-                flock(f, LOCK_UN)
+        with _locked(file):
+            with open(file, "a") as f:
+                f.write("".join(f"{ip}\n" for ip in ip_list))
         return True
-    except:
+    except Exception:
         logger.exception(f"PFUIFW: Failed to append {ip_list} to {file}.")
         return False
 
 
 def file_pop(logger, log: bool, file: str, ip_list: list):
-    """Remove IP from PF Table's File"""
+    """Remove IP(s) from PF Table's File, and dedupe what remains."""
 
     if log:
         logger.info(f"PFUIFW: Clearing '{ip_list}' from PF Table File {file}")
 
+    remove = set(ip_list)
     try:
-        to_del = [f"{ip}\n" for ip in ip_list] + [""]
-        tmp_file = file + str(int(time()))
-        with open(file, "r") as f, open(tmp_file, "w") as tmp:
-            # Read all lines not matching IP(s) to exclude
-            lines = [ip for ip in f if ip not in to_del]
-            lines = sorted(list(set(lines)))
-
-            # Copy on Write safety. Save to tmp file, lock and swap
-            tmp.writelines(lines)
-            while True:  # Set lock - blocking
-                try:
-                    flock(f, LOCK_EX | LOCK_NB)
-                    break
-                except IOError as e:
-                    if e.errno != errno.EAGAIN:
-                        raise  # raise other file access issues
-                    else:
-                        if log:
-                            logger.info(
-                                f"PFUIFW: PF Table File {file} already Locked. Waiting 2ms"
-                            )
-                        sleep(0.002)  # Wait 2ms
-            rename(tmp_file, file)
-            flock(f, LOCK_UN)
-    except:
+        with _locked(file):
+            with open(file, "r") as f:
+                # sorted() keeps content stable, so an unchanged whitelist
+                # produces an unchanged file. PF ignores line order.
+                keep = sorted(
+                    {
+                        line.strip()
+                        for line in f
+                        if line.strip() and line.strip() not in remove
+                    }
+                )
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(file) or ".", prefix=".pfui_", suffix=".tmp"
+            )
+            with os.fdopen(fd, "w") as t:
+                t.write("".join(f"{ip}\n" for ip in keep))
+            os.chmod(tmp, 0o640)  # mkstemp creates 0600; keep the installed mode
+            os.replace(tmp, file)  # Atomic within one filesystem
+        return True
+    except Exception:
         logger.exception(f"PFUIFW: Failed to delete IP(s) {ip_list} from {file}")
         return False
 

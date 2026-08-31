@@ -20,7 +20,7 @@ declared here and called by Unbound depending on EVENT type
 
 import sys
 from os.path import dirname, realpath
-from sys import exit, getsizeof
+from sys import exit
 from time import time
 from yaml import safe_load
 

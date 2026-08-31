@@ -120,7 +120,7 @@ def addr_struct(af, host):
     a.pfra_fback = 0
     a.pfra_ifname = b""
     a.pfra_type = PFRKE_PLAIN
-    a.states = 0
+    a.pfra_states = 0
     a.pfra_weight = 0
     return a
 
