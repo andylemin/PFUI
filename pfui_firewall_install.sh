@@ -12,9 +12,6 @@ die() {
   exit 1
 }
 
-args=("$@")
-SETPFCONF=${args[0]}
-
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 HOUR=$(date +%d-%b-%H_%M)
 
@@ -41,8 +38,27 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo "PFUIFW: Installing and Starting Redis"
   pkg_add -i redis
+  # Redis holds the whitelist that the sync loop pushes into the PF tables, so
+  # anything able to write those keys can authorise egress. Keep it loopback-only.
+  REDIS_CONF=/etc/redis/redis.conf
+  if [ -f "${REDIS_CONF}" ]; then
+    cp -p "${REDIS_CONF}" "${REDIS_CONF}.${HOUR}"
+    if grep -Eq '^[[:space:]]*bind[[:space:]]' "${REDIS_CONF}"; then
+      sed -i -e 's/^[[:space:]]*bind[[:space:]].*/bind 127.0.0.1/' "${REDIS_CONF}"
+    else
+      echo "bind 127.0.0.1" >> "${REDIS_CONF}"
+    fi
+    grep -Eq '^[[:space:]]*protected-mode' "${REDIS_CONF}" \
+      || echo "protected-mode yes" >> "${REDIS_CONF}"
+  else
+    echo "PFUIFW: WARNING ${REDIS_CONF} not found; verify Redis binds 127.0.0.1 only"
+  fi
   rcctl enable redis
-  rcctl start redis
+  rcctl restart redis
+  # Verify rather than assume
+  if command -v redis-cli >/dev/null 2>&1; then
+    echo "PFUIFW: Redis bind is now: $(redis-cli config get bind 2>/dev/null | tail -1)"
+  fi
 
   echo "PFUIFW: Creating daemon user '_pfui_firewall'"
 
@@ -94,6 +110,7 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   install -m 644 -o root -g wheel "${DIR}"/examples/pf.conf /etc/pf-pfui-example.conf
   echo "PFUIFW: An example pf.conf file is located at '/etc/pf-pfui-example.conf'"
+  echo "PFUIFW: /etc/pf.conf is NOT modified; merge the PFUI tables and rules yourself"
 
   echo "PFUIFW: Updating Persist files /var/spool/pfui/pfui_ipv<*>_domains"
   # Daemon-owned directory: file_push/file_pop need to create a .lock sidecar and
