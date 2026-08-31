@@ -15,7 +15,7 @@ import socket
 
 import pytest
 
-from pfui.wire import encode
+from pfui_wire import encode
 
 HOST = os.environ.get("PFUI_FW_HOST")
 PORT = int(os.environ.get("PFUI_FW_PORT", 10001))

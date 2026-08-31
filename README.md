@@ -18,6 +18,24 @@ Ie, Users cannot bypass an administrator's DNS blocking attempts using 'DNS over
 
 
 ------
+## Repository layout
+
+| Path | What it is |
+|------|------------|
+| [protocol/](protocol/) | The wire protocol: specification, conformance vectors, and the Python reference implementation shared by clients and servers |
+| [client-unbound/](client-unbound/) | PFUI client as an Unbound pythonmod plugin |
+| [server-python/](server-python/) | PFUI server for OpenBSD PF, in Python |
+| [server-c/](server-c/) | PFUI server in C. Framing only so far |
+| `install-client-unbound.sh` | Installs the Unbound client on a resolver |
+| `install-server-python.sh` | Installs the Python server on a PF firewall |
+| [examples/pf.conf](examples/pf.conf) | Example PF ruleset, applies to any server implementation |
+
+Clients and servers share only the protocol. Adding support for another resolver
+means a new `client-<resolver>/`; a second server implementation means a new
+`server-<language>/`. Both cases are conformance-tested against
+[protocol/vectors/](protocol/vectors/) rather than against each other.
+
+------
 ## PFUI Firewall comprises two parts
 
 **"PFUI_Unbound"** - A Python3 module for [Unbound](https://nlnetlabs.nl/projects/unbound/about/) DNS resolvers;
@@ -80,7 +98,7 @@ up to OpenBSD 7.4, Unbound 1.18, Python 3.10
 ```
 pkg_add bash
 git clone https://github.com/andylemin/PFUI.git && cd PFUI
-doas ./pfui_firewall_install.sh
+doas ./install-server-python.sh
 ```
 * 1b) Now add IP Reputation Block Lists to PF Firewalls (optional/recommended);\
 https://www.geoghegan.ca/pfbadhost.html \
@@ -99,7 +117,7 @@ sysctl net.inet.tcp.ackonpush=1
 ```
 pkg_add bash
 git clone https://github.com/andylemin/PFUI.git && cd PFUI
-doas ./pfui_unbound_install.sh
+doas ./install-client-unbound.sh
 ```
 Note the following lines in the example Unbound `/var/unbound/etc/pfui_unbound.conf` file after install (copy these to your own Unbound config or use the example);
 ```
@@ -247,7 +265,7 @@ This will avoid issues with local firewall services, which are assumed to be tru
 
 ------
 ### Docs;
-The Unbound "Python Module" [documentation](docs.html.pythonmod/index.html) has been included here for reference 
+The Unbound "Python Module" [documentation](client-unbound/docs.pythonmod/index.html) has been included here for reference 
 (requires compiling from source) and all rights remain with Unbound arthor's Nlnetlabs.
 The Python Module documentation for Unbound was built with SWIG on: Sep 3 13:18 2019
 

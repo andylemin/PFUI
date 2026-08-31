@@ -3,7 +3,7 @@
 import lz4.frame
 import pytest
 
-from pfui.wire import (
+from pfui_wire import (
     HEADER,
     MAX_MESSAGE,
     WireError,

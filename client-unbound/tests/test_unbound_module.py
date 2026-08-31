@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+COMPONENT = Path(__file__).resolve().parent.parent
 
 # Unbound's pythonmod injects these; supply stubs so call-time lookups resolve
 INJECTED = {
@@ -37,9 +37,9 @@ INJECTED = {
 
 @pytest.fixture(scope="module")
 def plugin():
-    sys.path.insert(0, str(REPO))
+    sys.path.insert(0, str(COMPONENT))
     spec = importlib.util.spec_from_file_location(
-        "pfui_unbound_plugin", REPO / "pfui_unbound.py"
+        "pfui_unbound_plugin", COMPONENT / "pfui_unbound.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -60,8 +60,8 @@ def test_module_loads_without_dunder_file():
     the fixture above cannot catch a dependency on it; exec the source in a bare
     namespace instead.
     """
-    source = (REPO / "pfui_unbound.py").read_text()
-    sys.path.insert(0, str(REPO))
+    source = (COMPONENT / "pfui_unbound.py").read_text()
+    sys.path.insert(0, str(COMPONENT))
     namespace = {"__name__": "pfui_unbound_no_file"}  # deliberately no __file__
     exec(compile(source, "pfui_unbound.py", "exec"), namespace)
     assert callable(namespace["operate"])

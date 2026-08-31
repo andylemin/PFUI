@@ -62,6 +62,6 @@ mismatched pair fails closed in either direction.
 
 ## Unbound runs unchrooted
 
-`chroot: ""` in the shipped resolver config. `pfui_unbound.py` imports `lz4` and
+`chroot: ""` in the shipped resolver config. `client-unbound/pfui_unbound.py` imports `lz4` and
 `yaml` at module load, and those would have to exist inside the chroot. Revisit
 only alongside a plan for the module's dependencies.

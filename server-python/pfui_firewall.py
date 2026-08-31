@@ -47,7 +47,7 @@ from socket import socket
 from pfui.pf_ioctl import table_pop, table_push
 from pfui.store import expired_keys
 from pfui.validate import extract
-from pfui.wire import MAX_MESSAGE, WireError, decode, read_frame
+from pfui_wire import MAX_MESSAGE, WireError, decode, read_frame
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 

@@ -12,7 +12,7 @@ import socket
 import lz4.frame
 import pytest
 
-from pfui.wire import HEADER, MAX_MESSAGE, encode
+from pfui_wire import HEADER, MAX_MESSAGE, encode
 
 HOST = os.environ.get("PFUI_FW_HOST")
 PORT = int(os.environ.get("PFUI_FW_PORT", 10001))

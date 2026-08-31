@@ -74,24 +74,28 @@ if [[ "$OS" = "OpenBSD" ]]; then
   # Not a virtualenv: the daemon runs under /usr/local/bin/python3 (see its
   # shebang), so the dependencies have to be importable there. The previous
   # venv was never wired into the daemon and was the only place these landed.
-  python3 -m pip install -r "${DIR}/requirements-firewall.txt" \
+  python3 -m pip install -r "${DIR}/server-python/requirements.txt" \
     || die "cannot install Python dependencies"
 
   echo "PFUIFW: Installing PFUI Firewall Service (will backup any existing pfui_firewall configuration)"
-  install -m 755 -o root -g wheel "${DIR}"/pfui_firewall.py /usr/local/sbin/pfui_firewall \
+  install -m 755 -o root -g wheel "${DIR}"/server-python/pfui_firewall.py /usr/local/sbin/pfui_firewall \
     || die "cannot install the daemon"
   # Shared modules must sit beside the daemon; a script's own directory is sys.path[0]
   install -d -m 755 -o root -g wheel /usr/local/sbin/pfui
-  install -m 644 -o root -g wheel "${DIR}"/pfui/__init__.py "${DIR}"/pfui/wire.py \
-    "${DIR}"/pfui/store.py "${DIR}"/pfui/validate.py /usr/local/sbin/pfui/ \
+  # Shared protocol module sits beside the daemon, as a top-level module
+  install -m 644 -o root -g wheel "${DIR}"/protocol/python/pfui_wire.py \
+    /usr/local/sbin/ || die "cannot install the shared wire module"
+  install -m 644 -o root -g wheel "${DIR}"/server-python/pfui/__init__.py \
+    "${DIR}"/server-python/pfui/store.py "${DIR}"/server-python/pfui/validate.py \
+    "${DIR}"/server-python/pfui/pf_ioctl.py /usr/local/sbin/pfui/ \
     || die "cannot install the pfui modules"
 
   [ -f /etc/pfui_firewall.yml ] && cp -p /etc/pfui_firewall.yml "/etc/pfui_firewall.yml.${HOUR}"
   # root-owned: the daemon only reads this, and CTL: PFCTL makes it a command source
-  install -m 644 -o root -g wheel "${DIR}"/pfui_firewall.yml /etc/pfui_firewall.yml
+  install -m 644 -o root -g wheel "${DIR}"/server-python/pfui_firewall.yml /etc/pfui_firewall.yml
   echo "PFUIFW: PFUI_Firewall default configuration file located at '/etc/pfui_firewall.yml' (please configure)"
   # root-owned: rcctl runs this as root, and a file's owner can always chmod it
-  install -m 555 -o root -g wheel "${DIR}"/rc.d/pfui_firewall /etc/rc.d/pfui_firewall \
+  install -m 555 -o root -g wheel "${DIR}"/server-python/rc.d/pfui_firewall /etc/rc.d/pfui_firewall \
     || die "cannot install the rc.d script"
 
   install -m 644 -o root -g wheel "${DIR}"/examples/pf.conf /etc/pf-pfui-example.conf

@@ -1,0 +1,173 @@
+{
+  "note": "frame_hex is byte-exact only for uncompressed payloads; compressed frames are round-trip only",
+  "max_message": 1048576,
+  "vectors": [
+    {
+      "name": "rr_single_a",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "8.8.8.8",
+            "ttl": 3600,
+            "qname": "example.com."
+          }
+        ],
+        "AF6": []
+      },
+      "compress": false,
+      "byte_exact": true,
+      "frame_hex": "0000005b7b226b696e64223a20227272222c2022414634223a205b7b226970223a2022382e382e382e38222c202274746c223a20333630302c2022716e616d65223a20226578616d706c652e636f6d2e227d5d2c2022414636223a205b5d7d"
+    },
+    {
+      "name": "rr_single_a_lz4",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "8.8.8.8",
+            "ttl": 3600,
+            "qname": "example.com."
+          }
+        ],
+        "AF6": []
+      },
+      "compress": true,
+      "byte_exact": false
+    },
+    {
+      "name": "rr_dual_stack",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "1.1.1.1",
+            "ttl": 300
+          }
+        ],
+        "AF6": [
+          {
+            "ip": "2001:4860:4860::8888",
+            "ttl": 300
+          }
+        ]
+      },
+      "compress": false,
+      "byte_exact": true,
+      "frame_hex": "0000006b7b226b696e64223a20227272222c2022414634223a205b7b226970223a2022312e312e312e31222c202274746c223a203330307d5d2c2022414636223a205b7b226970223a2022323030313a343836303a343836303a3a38383838222c202274746c223a203330307d5d7d"
+    },
+    {
+      "name": "rr_dual_stack_lz4",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "1.1.1.1",
+            "ttl": 300
+          }
+        ],
+        "AF6": [
+          {
+            "ip": "2001:4860:4860::8888",
+            "ttl": 300
+          }
+        ]
+      },
+      "compress": true,
+      "byte_exact": false
+    },
+    {
+      "name": "cache_absolute_expiry",
+      "message": {
+        "kind": "cache",
+        "AF4": [
+          {
+            "ip": "1.0.0.1",
+            "ttl": 1675846753
+          }
+        ],
+        "AF6": []
+      },
+      "compress": false,
+      "byte_exact": true,
+      "frame_hex": "0000004b7b226b696e64223a20226361636865222c2022414634223a205b7b226970223a2022312e302e302e31222c202274746c223a20313637353834363735337d5d2c2022414636223a205b5d7d"
+    },
+    {
+      "name": "cache_absolute_expiry_lz4",
+      "message": {
+        "kind": "cache",
+        "AF4": [
+          {
+            "ip": "1.0.0.1",
+            "ttl": 1675846753
+          }
+        ],
+        "AF6": []
+      },
+      "compress": true,
+      "byte_exact": false
+    },
+    {
+      "name": "rr_zero_ttl",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "8.8.4.4",
+            "ttl": 0
+          }
+        ],
+        "AF6": []
+      },
+      "compress": false,
+      "byte_exact": true,
+      "frame_hex": "0000003f7b226b696e64223a20227272222c2022414634223a205b7b226970223a2022382e382e342e34222c202274746c223a20307d5d2c2022414636223a205b5d7d"
+    },
+    {
+      "name": "rr_zero_ttl_lz4",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "8.8.4.4",
+            "ttl": 0
+          }
+        ],
+        "AF6": []
+      },
+      "compress": true,
+      "byte_exact": false
+    },
+    {
+      "name": "rr_long_ttl_not_a_timestamp",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "8.8.8.8",
+            "ttl": 604800
+          }
+        ],
+        "AF6": []
+      },
+      "compress": false,
+      "byte_exact": true,
+      "frame_hex": "000000447b226b696e64223a20227272222c2022414634223a205b7b226970223a2022382e382e382e38222c202274746c223a203630343830307d5d2c2022414636223a205b5d7d"
+    },
+    {
+      "name": "rr_long_ttl_not_a_timestamp_lz4",
+      "message": {
+        "kind": "rr",
+        "AF4": [
+          {
+            "ip": "8.8.8.8",
+            "ttl": 604800
+          }
+        ],
+        "AF6": []
+      },
+      "compress": true,
+      "byte_exact": false
+    }
+  ]
+}

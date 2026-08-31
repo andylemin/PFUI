@@ -34,7 +34,7 @@ export PKG_PATH=http://ftp.openbsd.org/pub/OpenBSD/%v/packages/%a/
 pkg_add -i bash
 
 # All edge OpenBSD Firewalls
-pfui_firewall_install.sh
+install-server-python.sh
 
 # All internal DNS Servers
 install_pfui_unbound.sh
@@ -80,7 +80,7 @@ pkg_add -i swig git bash cmake libconfig libiconv bison gawk mawk
 ```
 
 #### TODO: PFUI_Unbound Dependencies
-python3 -m pip install -r ./requirements-unbound.txt
+python3 -m pip install -r ./client-unbound/requirements.txt
 
 ### PFUI_Unbound - Download Unbound source
 ```
