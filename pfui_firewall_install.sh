@@ -62,11 +62,6 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo "PFUIFW: Creating daemon user '_pfui_firewall'"
 
-#  groupadd _pfui_firewall
-#  useradd -s /sbin/nologin -d /var/empty _pfui_firewall
-#install -m 755 -o root -g bin unbound-adblock.sh /usr/local/bin/unbound-adblock
-# https://www.geoghegan.ca/pub/unbound-adblock/latest/install/openbsd.txt
-
   groupadd _pfui_firewall 2>/dev/null || true
   useradd -g _pfui_firewall -s /sbin/nologin -d /var/empty _pfui_firewall 2>/dev/null || true
   id _pfui_firewall >/dev/null || die "daemon user _pfui_firewall was not created"
@@ -75,15 +70,12 @@ if [[ "$OS" = "OpenBSD" ]]; then
   # re-applies this on every start, because MAKEDEV resets it on release upgrades
   chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf || die "cannot set /dev/pf ownership"
 
-  echo "PFUIFW: Creating Python virtual environment and installing dependencies"
-  python -m venv pfui_firewall
-  ./pfui_firewall/bin/pip install --upgrade pip
-  ./pfui_firewall/bin/pip install redis pyyaml service lz4
-#  echo "PFUIFW: Installing Python Libraries"
-#  python3 -m pip install redis pyyaml service lz4
-#  ldconfig -mv /usr/local/lib
-
-# TODO Get pfui_firewall daemon working with venv. Needs to be in directory with daemon?
+  echo "PFUIFW: Installing Python dependencies for the system interpreter"
+  # Not a virtualenv: the daemon runs under /usr/local/bin/python3 (see its
+  # shebang), so the dependencies have to be importable there. The previous
+  # venv was never wired into the daemon and was the only place these landed.
+  python3 -m pip install -r "${DIR}/requirements-firewall.txt" \
+    || die "cannot install Python dependencies"
 
   echo "PFUIFW: Installing PFUI Firewall Service (will backup any existing pfui_firewall configuration)"
   install -m 755 -o root -g wheel "${DIR}"/pfui_firewall.py /usr/local/sbin/pfui_firewall \
@@ -94,19 +86,13 @@ if [[ "$OS" = "OpenBSD" ]]; then
     "${DIR}"/pfui/store.py "${DIR}"/pfui/validate.py /usr/local/sbin/pfui/ \
     || die "cannot install the pfui modules"
 
-#  cp -f "${DIR}/pfui_firewall.py" /usr/local/sbin/pfui_firewall
-#  chmod 755 /usr/local/sbin/pfui_firewall
   [ -f /etc/pfui_firewall.yml ] && cp -p /etc/pfui_firewall.yml "/etc/pfui_firewall.yml.${HOUR}"
   # root-owned: the daemon only reads this, and CTL: PFCTL makes it a command source
   install -m 644 -o root -g wheel "${DIR}"/pfui_firewall.yml /etc/pfui_firewall.yml
   echo "PFUIFW: PFUI_Firewall default configuration file located at '/etc/pfui_firewall.yml' (please configure)"
-#  cp -f "${DIR}/pfui_firewall.yml" /etc/pfui_firewall.yml
-#  chmod 644 /etc/pfui_firewall.yml
   # root-owned: rcctl runs this as root, and a file's owner can always chmod it
   install -m 555 -o root -g wheel "${DIR}"/rc.d/pfui_firewall /etc/rc.d/pfui_firewall \
     || die "cannot install the rc.d script"
-#  cp -f "${DIR}/rc.d/pfui_firewall" /etc/rc.d/pfui_firewall
-#  chmod 555 /etc/rc.d/pfui_firewall
 
   install -m 644 -o root -g wheel "${DIR}"/examples/pf.conf /etc/pf-pfui-example.conf
   echo "PFUIFW: An example pf.conf file is located at '/etc/pf-pfui-example.conf'"

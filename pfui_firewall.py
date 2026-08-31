@@ -266,7 +266,8 @@ class ScanSync(Thread):
 
     def sync_pf_table(self, keys=None):
         """
-        Sync the Redis table with the PF Table. Uses pfctl rather IOCTL to read PF Table for now until IOCTL show added
+        Sync the Redis table with the PF Table. Reads the table with pfctl; DIOCRGETADDRS
+        is not implemented (see DECISIONS.md)
         """
         if self.cfg["LOGGING"]:
             self.logger.info(
@@ -284,7 +285,8 @@ class ScanSync(Thread):
                     return
             db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
 
-            # Get all PF Table IPs - TODO pfctl show is slow, implement IOCTL show.
+            # Read the live PF table. pfctl costs a subprocess, but this runs
+            # once per SCAN_PERIOD, not per query (see DECISIONS.md)
             entries = list(
                 subprocess.Popen(
                     ["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE
@@ -559,8 +561,8 @@ class PFUI_Firewall(Service):
                 except socket_timeout:
                     continue
 
-        # TODO UDP support is not recommended (experimental) as Unbound Python Module is executed every lookup,
-        #  generating new connection for each lookup. With UDP defaults, this results in ~213qps
+        # UDP is experimental and spoofable. The Unbound module runs per lookup, so
+        # each lookup is a fresh exchange; with UDP defaults that caps out near 213qps
         elif self.cfg["SOCKET_PROTO"] == "UDP":
             # setup listen socket
             self.soc = socket(AF_INET, SOCK_DGRAM)  # UDP Datagram Socket

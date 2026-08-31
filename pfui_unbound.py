@@ -311,8 +311,13 @@ def tcp_transmit_close(data, ip, port, blocking):
 
     try:
         if blocking:
-            _ = conn.recv(36)  # Wait for pfui_firewall to ACK(36)
-            # TODO Verify ACK/NACK message
+            reply = conn.recv(36)  # Wait for pfui_firewall to ACK
+            if reply != b"ACKUPDATE":
+                # The firewall replies with a reason when it refuses a message,
+                # e.g. a version skew that leaves the wire format mismatched
+                log_err(
+                    f"PFUIDNS: {ip}:{port} did not confirm the update: {reply!r}"
+                )
     except TIMEOUT:
         log_err(
             "PFUIDNS: Timeout waiting for pfui_firewall ACK."
@@ -343,7 +348,8 @@ def transmit_all(pfui_dict, blocking=True):
             # JSON, optionally lz4 compressed. TCP adds a length prefix below
             pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
 
-            # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
+            # Firewalls are updated serially; the circuit breaker keeps an
+            # unreachable one from adding its timeout to every query
 
             if pfui_cfg["SOCKET_PROTO"] == "UDP":
                 udp_transmit_close(

@@ -138,7 +138,10 @@ fi
 
 echo
 echo "PFUIDNS: Installing PFUI Python dependencies"
-python3 -m pip install pyyaml lz4
+# The resolver runs unchrooted (chroot: "" in pfui_unbound.conf), so the module
+# imports these from the system interpreter's site-packages
+python3 -m pip install -r "${DIR}/requirements-unbound.txt" \
+  || die "cannot install Python dependencies"
 
 if [[ "$OS" = "OpenBSD" ]]; then
   if [ ! -d "${TARGET}" ]; then
@@ -288,7 +291,6 @@ echo "Stop built-in Unbound daemon;    'rcctl stop unbound'"
 echo "Disable built-in Unbound daemon; 'rcctl disable unbound'"
 echo "Enable Unbound (+pythonmodule);"
 echo "                                 'rcctl enable pfui_unbound'"
-echo "                                 'rcctl set pfui_unbound flags '-c /var/unbound/etc/pfui_unbound.conf' '"
 echo "Start Unbound (+pythonmodule);   'rcctl start pfui_unbound'"
 echo
 echo "4) Setup a DNS blocklist source. Eg, https://www.geoghegan.ca/unbound-adblock.html (See README for PFUI compatibility and install steps)"

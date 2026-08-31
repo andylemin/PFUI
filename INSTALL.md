@@ -34,7 +34,7 @@ export PKG_PATH=http://ftp.openbsd.org/pub/OpenBSD/%v/packages/%a/
 pkg_add -i bash
 
 # All edge OpenBSD Firewalls
-install_pfui_firewall.sh
+pfui_firewall_install.sh
 
 # All internal DNS Servers
 install_pfui_unbound.sh
@@ -80,7 +80,7 @@ pkg_add -i swig git bash cmake libconfig libiconv bison gawk mawk
 ```
 
 #### TODO: PFUI_Unbound Dependencies
-python3 -m pip install -r ./requirements_unbound.txt
+python3 -m pip install -r ./requirements-unbound.txt
 
 ### PFUI_Unbound - Download Unbound source
 ```
@@ -147,13 +147,13 @@ rcctl enable redis
 rcctl start redis
 ```
 ```
-chmod 755 ./update_root_servers.sh
-chmod 755 ./update_filtered_domains.sh
+chmod 755 ./update_root_hints.sh
+chmod 755 ./update_dns_blocklist.sh
 
 chmod 555 /etc/rc.d/pfui_unbound
 
-chmod 755 ./update_root_servers.sh
-chmod 755 ./update_filtered_domains.sh 
+chmod 755 ./update_root_hints.sh
+chmod 755 ./update_dns_blocklist.sh 
 ```
 
 #### TODO: Section for Unbound service

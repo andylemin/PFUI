@@ -1,3 +1,14 @@
-docs.html.pythonmod/
-ioctl/
-socket/
+# Build and interpreter artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# The installer creates a virtualenv here if run from the repo root
+pfui_firewall/
+
+# Local agent/editor state, never committed
+.roo/
+.DS_Store
