@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pure:
+    # The pure suites (wire, expiry, validation, persist files, PF struct
+    # layout) are host-independent. The PF ioctl and live-firewall suites skip
+    # themselves here and must be run on an OpenBSD host.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip lz4 pyyaml pytest
+      - name: Run tests
+        run: python -m pytest tests/ -v
+      - name: Check both daemons parse
+        run: python -m py_compile pfui_firewall.py pfui_unbound.py
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check the install and ops scripts
+        run: |
+          for f in *.sh; do bash -n "$f"; done
+      - name: Syntax-check the rc.d scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ksh
+          for f in rc.d/*; do ksh -n "$f"; done

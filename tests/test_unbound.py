@@ -1,84 +1,87 @@
-#!/usr/bin/env python
+"""Integration tests that speak the real PFUI wire format to a running
+PFUI_Firewall.
 
+Skipped unless PFUI_FW_HOST is set, because they need a live daemon and they
+mutate its PF tables:
+
+    PFUI_FW_HOST=10.10.1.254 PFUI_FW_PORT=10001 pytest tests/test_unbound.py
+
+The previous version of this file sent json.dumps() output (a str, so TypeError
+on Py3), called an undefined log_err, and did not match the wire format at all.
+"""
+
+import os
 import socket
-from time import time
-from json import dumps
-from yaml import safe_load
 
-TEST_MESSAGE1 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}],
-                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+import pytest
 
-TEST_MESSAGE2 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600},
-                         {'ip': '192.0.2.1', 'ttl': 100}],
-                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+from pfui.wire import encode
 
-TEST_MESSAGE3 = {'AF4': [{'ip': '192.0.2.1', 'ttl': 3600},
-                         {'ip': '192.0.2.2', 'ttl': 100},
-                         {'ip': '192.0.2.3', 'ttl': 100}],
-                 'AF6': [{'ip': '2001:db8:1:1::1', 'ttl': 3600},
-                         {'ip': '2001:DB8:1:2::1', 'ttl': 100}]}
+HOST = os.environ.get("PFUI_FW_HOST")
+PORT = int(os.environ.get("PFUI_FW_PORT", 10001))
+COMPRESS = os.environ.get("PFUI_FW_COMPRESS", "1") == "1"
+TIMEOUT = float(os.environ.get("PFUI_FW_TIMEOUT", 3))
 
-TEST_MESSAGE4 = {'AF4': [{'ip': '198.51.100.1', 'ttl': 3600}],
-                 'AF6': []}
-
-TEST_MESSAGE6 = {'AF4': [],
-                 'AF6': [{'ip': '2001:DB8:1:1::1', 'ttl': 3600}]}
+pytestmark = pytest.mark.skipif(
+    not HOST, reason="set PFUI_FW_HOST to run against a live PFUI_Firewall"
+)
 
 
-def log_info(message):
-    print(str(message))
+def send(msg, expect_reply=True):
+    """Send one framed message, returning the daemon's reply bytes."""
+    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    conn.settimeout(TIMEOUT)
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+    try:
+        conn.connect((HOST, PORT))
+        conn.sendall(encode(msg, compress=COMPRESS))
+        if not expect_reply:
+            return b""
+        return conn.recv(64)
+    finally:
+        conn.close()
 
 
-def transmit(ip_dict):
-    """ Transmits IP and TTL data structure to PF Firewalls running pfui_firewall. """
-
-    if cfg['SOCKET_PROTO'] == "UDP":
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    elif cfg['SOCKET_PROTO'] == "TCP":
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)  # Disable Nagle
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 0)  # Zero size Buffer (Send immediately)
-        s.settimeout(cfg['SOCKET_TIMEOUT'])
-
-    for fw in cfg['FIREWALLS']:
-        if fw['HOST']:
-            if 'PORT' not in fw:
-                fw['PORT'] = cfg['DEFAULT_PORT']
-            try:
-                if cfg['LOGGING']:
-                    log_info("PFUIDNS: Sending : {} {}".format(type(ip_dict), ip_dict))
-                    start = time()
-                if cfg['SOCKET_PROTO'] == "UDP":
-                    try:
-                        s.sendto(dumps(ip_dict), (fw['HOST'], fw['PORT']))
-                        if cfg['BLOCKING']:
-                            _, _ = s.recvfrom(4096)
-                    except Exception as e:
-                        log_err("PFUIDNS: UDP Socket Error {}".format(e))
-                elif cfg['SOCKET_PROTO'] == "TCP":
-                    try:
-                        s.connect((fw['HOST'], fw['PORT']))
-                        s.send(dumps(ip_dict))
-                        s.send(b"EOT")  # Terminate stream and Provoke ACK
-                        if cfg['BLOCKING']:
-                            _ = s.recv(36)  # Wait for PF rules commit  # TODO Verify is ACK/NACK
-                    except socket.timeout:
-                        log_err("PFUIDNS: Socket timeout to firewall!")  # TODO Need retries for 'blocking' mode
-                    except socket.error:
-                        log_err("PFUIDNS: Socket Error! Check pfui_firewall is running.")
-                if cfg['LOGGING']:
-                    end = time()
-                    diff = (end - start)*(10**6)
-                    log_info("PFUIDNS: DNS Answer Blocked {} microsecs".format(diff))
-            except Exception as e:
-                log_err("PFUIDNS: Failed to send " + str(e))
-            s.close()
+def test_single_ipv4_answer_is_acknowledged():
+    reply = send({"AF4": [{"ip": "1.1.1.1", "ttl": 3600, "qname": "test."}],
+                  "AF6": [], "kind": "rr"})
+    assert reply == b"ACKUPDATE"
 
 
-try:
-    cfg = safe_load(open('pfui_unbound.yml'))
-except Exception as e:
-    print("YAML Config File not found or cannot load: " + str(e))
-    exit(1)
+def test_dual_stack_answer_is_acknowledged():
+    reply = send(
+        {
+            "AF4": [{"ip": "1.1.1.1", "ttl": 3600, "qname": "test."}],
+            "AF6": [{"ip": "2606:4700:4700::1111", "ttl": 3600, "qname": "test."}],
+            "kind": "rr",
+        }
+    )
+    assert reply == b"ACKUPDATE"
 
-transmit(TEST_MESSAGE3)
+
+def test_cache_kind_answer_is_acknowledged():
+    """A cache-derived message carries an absolute expiry, not a relative TTL."""
+    import time
+
+    reply = send(
+        {
+            "AF4": [{"ip": "1.0.0.1", "ttl": int(time.time()) + 3600, "qname": "test."}],
+            "AF6": [],
+            "kind": "cache",
+        }
+    )
+    assert reply == b"ACKUPDATE"
+
+
+def test_large_answer_survives_reassembly():
+    """The defect that motivated length-prefix framing: a message larger than
+    2 x SOCKET_BUFFER used to lose its leading bytes and be dropped."""
+    msg = {
+        "AF4": [
+            {"ip": f"1.1.{i // 254}.{i % 254 + 1}", "ttl": 3600, "qname": "big."}
+            for i in range(500)
+        ],
+        "AF6": [],
+        "kind": "rr",
+    }
+    assert send(msg) == b"ACKUPDATE"
