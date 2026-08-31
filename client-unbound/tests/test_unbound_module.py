@@ -157,3 +157,61 @@ def test_operate_finishes_on_moddone_without_a_reply(plugin):
     qstate = QState()
     assert plugin.operate(0, plugin.MODULE_EVENT_MODDONE, qstate, None) is True
     assert qstate.ext_state[0] == plugin.MODULE_FINISHED
+
+def test_rrsig_rdata_is_not_read_as_an_address(plugin):
+    """An rrset carries d.count addresses followed by d.rrsig_count signatures.
+    Reading the signatures as addresses whitelisted their trailing bytes, which
+    an attacker controls, so every signed answer leaked one arbitrary IP."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class FakeData:
+        count = 1  # one A record
+        rrsig_count = 1  # plus its signature
+        rr_ttl = [3600, 3600]
+        rr_data = [
+            b"\x00\x04" + bytes([8, 8, 8, 8]),  # the address
+            b"\x00\x88" + bytes(0x84) + bytes([136, 137, 138, 139]),  # signature
+        ]
+
+    class FakeKey:
+        type_str = "A"
+
+    class FakeRRset:
+        rk = FakeKey()
+
+        class entry:
+            data = FakeData()
+
+    class FakeRep:
+        rrset_count = 1
+        rrsets = [FakeRRset()]
+
+    msg = plugin.read_rr(FakeRep(), "signed.example.com.")
+    addresses = [r["ip"] for r in msg["AF4"]]
+    assert addresses == ["8.8.8.8"], f"signature bytes leaked as {addresses}"
+
+
+def test_rrsig_only_rrset_yields_nothing(plugin):
+    """A signature with no address alongside it must produce no records."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class FakeData:
+        count = 0
+        rrsig_count = 1
+        rr_ttl = [3600]
+        rr_data = [b"\x00\x88" + bytes([1, 2, 3, 4])]
+
+    class FakeKey:
+        type_str = "A"
+
+    class FakeRRset:
+        rk = FakeKey()
+
+        class entry:
+            data = FakeData()
+
+    class FakeRep:
+        rrset_count = 1
+        rrsets = [FakeRRset()]
+
+    assert plugin.read_rr(FakeRep(), "sig-only.example.com.") is False

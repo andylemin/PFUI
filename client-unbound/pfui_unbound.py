@@ -134,9 +134,11 @@ def read_rr(rep=None, qname_str="", from_cache=False):
             if rr.rk.type_str == "A":
                 d = rr.entry.data
                 # Last 4 bytes contain IPv4 address
+                # d.count addresses, then d.rrsig_count signatures. Reading the
+                # signatures as addresses would whitelist arbitrary bytes.
                 for rr_ip4, rr_ttl4 in [
                     (d.rr_data[j][-4:], int(d.rr_ttl[j]))
-                    for j in range(d.count + d.rrsig_count)
+                    for j in range(d.count)
                 ]:
                     try:
                         ipv4_addr = inet_ntop(
@@ -159,7 +161,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
                 # Last 16 bytes contain IPv6 address
                 for rr_ip6, rr_ttl6 in [
                     (d.rr_data[j][-16:], int(d.rr_ttl[j]))
-                    for j in range(d.count + d.rrsig_count)
+                    for j in range(d.count)
                 ]:
                     try:
                         ipv6_addr = inet_ntop(
