@@ -5,7 +5,8 @@ Normative description of what a PFUI client sends to a PFUI server. Any client
 (`server-python/`, `server-c/`) must agree with this document, and both are
 tested against the shared vectors in `vectors/`.
 
-Version: 1. There is no version field on the wire; see
+Version: 2 (`qname` moved from each record to the message). There is no version
+field on the wire; see
 [Compatibility](#compatibility).
 
 ## Transport
@@ -51,6 +52,15 @@ A TCP message is exactly one frame:
 UDP datagrams are self-delimiting and carry the payload **alone**, with no
 length prefix.
 
+UDP therefore has a message-size ceiling that TCP does not. A datagram above the
+link MTU fragments and PF commonly drops fragments, so a server MUST NOT be
+expected to receive a large message over UDP however big its receive buffer is.
+`server-python` caps datagrams at 1400 bytes and logs a rejection above that
+rather than handing truncated bytes to the decoder. Note that the ceiling applies
+to the *encoded message*, not the DNS answer it came from: `qname` appears once
+per message but the JSON overhead is real, so an uncompressed message reaches
+1400 bytes at roughly 20 address records. Use TCP for anything but a lab.
+
 ## Payload
 
 The payload is UTF-8 JSON, optionally compressed with lz4 frame format. Whether
@@ -66,19 +76,39 @@ runs.
 ```json
 {
   "kind": "rr",
-  "AF4": [{"ip": "8.8.8.8",             "ttl": 3600, "qname": "example.com."}],
-  "AF6": [{"ip": "2001:4860:4860::8888", "ttl": 3600, "qname": "example.com."}]
+  "qname": "example.com.",
+  "AF4": [{"ip": "8.8.8.8", "ttl": 3600}],
+  "AF6": [{"ip": "2001:4860:4860::8888", "ttl": 3600}]
 }
 ```
 
 | Field | Type | Meaning |
 |-------|------|---------|
 | `kind` | `"rr"` or `"cache"` | How to read every `ttl` in this message. Required. |
+| `qname` | string | The query name every record in this message answers. Optional; `""` if unknown. |
 | `AF4` | array | IPv4 records. May be empty or absent. |
 | `AF6` | array | IPv6 records. May be empty or absent. |
 | `AF*[].ip` | string | Address in presentation form. |
 | `AF*[].ttl` | integer | See `kind`. `0` is valid and means do-not-cache. |
-| `AF*[].qname` | string | Query name, for logging. Optional. |
+
+`qname` is a property of the message, not of each address: one message carries
+one reply, and every address in it answers the same query.
+
+**One message per reply, sent immediately.** A client MUST send the message as
+soon as it has the reply's records, and MUST NOT wait for further replies, batch
+messages, or hold records back for any reason. The whole design depends on the
+addresses reaching the PF table in the microseconds before the client connects
+to them, so any buffering trades away the property PFUI exists to provide. A
+client MUST NOT put records for more than one query name in one message, which
+is what makes a single message-level `qname` correct rather than merely
+convenient.
+
+Several addresses in one message therefore means one DNS reply that carried
+several records, never an accumulation across replies. Repeating it per
+record cost roughly half the uncompressed payload for a 24-address answer (2021
+bytes against 940). Compression hid almost all of that on the wire — 262 bytes
+against 261 — so the saving is mostly in what an uncompressed deployment sends
+and in not implying the fields can differ.
 
 `kind` is what removes the guesswork that used to come from TTL magnitude:
 
@@ -107,6 +137,7 @@ IPv6 spelling.
 | Reply | Meaning |
 |-------|---------|
 | `ACKDATA` | UDP only. The datagram decoded to a valid message. Sent **after** validation, never on receipt. |
+| (silence) | UDP only. A refused datagram gets no reply at all, since its source address is unverified and a reply would make the server a reflector. |
 | `ACKUPDATE` | The PF tables have been updated. The client may release the DNS answer. |
 | any other | Refusal, with a short human-readable reason (`Missing kind`, `Bad frame`, `Bad length`, `Truncated`, `Failed to decode`, `Invalid datatype`, `Empty payload`, `Socket timeout`). |
 

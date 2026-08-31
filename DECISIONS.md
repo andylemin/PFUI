@@ -16,6 +16,15 @@ now as a larger change to the daemon's startup path.
 On OpenBSD `/dev` is a static on-disk directory, so the mode persists across
 reboots; what resets it is `MAKEDEV` during a release upgrade.
 
+## UDP has a message-size ceiling
+
+`UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a
+buffer that wants raising: a datagram above the link MTU fragments and PF
+commonly drops fragments, so UDP cannot carry the large answers TCP handles. A
+message above the ceiling is logged and dropped rather than truncated silently.
+Accepted because UDP is lab-only and gated behind `ALLOW_INSECURE_UDP`; the fix
+for a real deployment is TCP.
+
 ## Unauthenticated transport
 
 Neither the TCP nor the UDP transport authenticates or encrypts. IPs must reach
@@ -45,6 +54,47 @@ A real reload would re-read only the safely re-readable keys (`LOGGING`,
 changes as restart-only. Deferred: a restart costs a few seconds of fail-closed
 control plane, so the concurrency cost of swapping config under running threads
 is not yet justified.
+
+## One TCP connection per DNS answer
+
+The client connects, sends, reads the acknowledgement and closes, for every
+answer. This is the dominant latency cost: the handshake means roughly 2 RTT to
+deliver a message and get a reply, where a held-open connection would need 1. It
+also puts a TIME_WAIT socket on the *firewall* for each query, since the server
+replies and closes first, and it caps throughput on ephemeral port reuse.
+
+It stays this way because an Unbound pythonmod plugin cannot hold a connection:
+it is called per query inside the resolver, with no process of its own to own a
+socket across queries. Fixing it properly means a separate client daemon holding
+a persistent connection to each firewall, with the plugin handing messages to it
+over local IPC. That is a new component, not a change to this one, and it is not
+scheduled.
+
+What was done instead is to remove the costs that are avoidable without it:
+TCP_NODELAY on both ends, no pointless SO_SNDBUF clamping, and an accept queue
+deep enough that a burst does not turn into a SYN retransmit.
+
+Parallelising the sends to multiple firewalls is still open, and marked with a
+TODO in transmit_all. With BLOCKING, a healthy CARP pair doubles the block time.
+Whether a thread per firewall per query is cheaper than the serial round trips
+needs measuring rather than assuming.
+
+## Nothing is buffered on the send path
+
+A reply is encoded and transmitted as soon as the resolver hands it over: one
+reply, one message, no batching, no queue, no coalescing of records across
+queries. `read_rr` reads the rrsets Unbound has already produced and
+`transmit_all` runs on the next line. Several addresses in one message means one
+reply carried several records.
+
+This is a constraint rather than an implementation detail, so PROTOCOL.md states
+it normatively. An optimisation that batched messages would look like a
+bandwidth win and would break the guarantee the whole design rests on: the
+address must be in the PF table before the client connects.
+
+The one place work can wait is the server's receiver pool, which is bounded at
+twice MAX_WORKERS and sheds beyond that rather than queueing without limit. It
+delays a message that has already arrived; it never delays sending one.
 
 ## Persist files are append-only on the hot path
 

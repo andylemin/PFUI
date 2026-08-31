@@ -115,8 +115,11 @@ def logger(qstate):
 
 def read_rr(rep=None, qname_str="", from_cache=False):
     """PFUI: Inspects RR response data, extracts IPs and TTLs, and returns PFUI Firewall data structure.
-    Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl }],
-                     'kind': 'rr'|'cache'}
+    Data Structure: {'kind': 'rr'|'cache', 'qname': qname_str,
+                     'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl}],
+                     'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl}]}
+    qname is per message, not per record: every record in one reply shares the
+    query name, so repeating it once per address was pure duplication.
     On the cache path Unbound reports rr_ttl as an absolute expiry timestamp, on
     the reply path as a relative TTL. 'kind' records which, so the firewall does
     not have to guess from the magnitude.
@@ -134,17 +137,17 @@ def read_rr(rep=None, qname_str="", from_cache=False):
             if rr.rk.type_str == "A":
                 d = rr.entry.data
                 # Last 4 bytes contain IPv4 address
+                # d.count addresses, then d.rrsig_count signatures. Reading the
+                # signatures as addresses would whitelist arbitrary bytes.
                 for rr_ip4, rr_ttl4 in [
                     (d.rr_data[j][-4:], int(d.rr_ttl[j]))
-                    for j in range(d.count + d.rrsig_count)
+                    for j in range(d.count)
                 ]:
                     try:
                         ipv4_addr = inet_ntop(
                             AF_INET, rr_ip4
                         )  # IP bytes to display format
-                        ipv4_resps.append(
-                            {"ip": ipv4_addr, "ttl": int(rr_ttl4), "qname": qname_str}
-                        )
+                        ipv4_resps.append({"ip": ipv4_addr, "ttl": int(rr_ttl4)})
                         if pfui_cfg["LOGGING"]:
                             log_info(
                                 f"PFUIDNS: {qname_str} Found IPv4 address {ipv4_addr}"
@@ -159,15 +162,13 @@ def read_rr(rep=None, qname_str="", from_cache=False):
                 # Last 16 bytes contain IPv6 address
                 for rr_ip6, rr_ttl6 in [
                     (d.rr_data[j][-16:], int(d.rr_ttl[j]))
-                    for j in range(d.count + d.rrsig_count)
+                    for j in range(d.count)
                 ]:
                     try:
                         ipv6_addr = inet_ntop(
                             AF_INET6, rr_ip6
                         )  # IP6 bytes to display format
-                        ipv6_resps.append(
-                            {"ip": ipv6_addr, "ttl": int(rr_ttl6), "qname": qname_str}
-                        )
+                        ipv6_resps.append({"ip": ipv6_addr, "ttl": int(rr_ttl6)})
                         if pfui_cfg["LOGGING"]:
                             log_info(
                                 f"PFUIDNS: {qname_str} Found IPv6 address {ipv6_addr}"
@@ -179,9 +180,10 @@ def read_rr(rep=None, qname_str="", from_cache=False):
 
     if ipv4_resps or ipv6_resps:
         return {
+            "kind": "cache" if from_cache else "rr",
+            "qname": qname_str,
             "AF4": ipv4_resps,
             "AF6": ipv6_resps,
-            "kind": "cache" if from_cache else "rr",
         }
     else:
         return False
@@ -189,6 +191,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
 
 def udp_transmit(soc, data, ip, port, retry=1):
     tries = 0
+    msg = None  # retry may be 0, and the summary below reads this
     while tries < retry:
         try:
             log_info(f"PFUIDNS: UDP Transmitting {len(data)} bytes")
@@ -235,6 +238,7 @@ def udp_transmit_close(data, ip, port, blocking):
 
     # transmit pf firewall data
     reply = udp_transmit(soc, data, ip, port, int(pfui_cfg["UDP_RETRY"]))
+    breaker_record(ip, port, ok=(reply == b"ACKDATA"))
 
     # wait for pf firewall update
     if blocking:  # Wait for secondary ACKUPDATE
@@ -289,14 +293,15 @@ def tcp_transmit_close(data, ip, port, blocking):
     conn.setsockopt(
         SOL_SOCKET, SO_REUSEADDR, True
     )  # Fast Socket reuse
-    conn.setsockopt(
-        SOL_SOCKET, SO_SNDBUF, 0
-    )  # Zero size Buffer (Zero buff, Send immediately?)
-    # s.setsockopt(SOL_SOCKET, SO_SNDBUF, getsizeof(data))  # Exact send buff
+    # No SO_SNDBUF here: setting it to 0 does not mean "send immediately", the
+    # kernel clamps it to its minimum, and a small send buffer only adds syscalls
+    # and blocking on large messages. TCP_NODELAY above is the latency control.
 
+    sent = False
     try:
         conn.connect((ip, port))
         conn.sendall(frame(data))
+        sent = True
         breaker_record(ip, port, ok=True)
     except TIMEOUT:
         breaker_record(ip, port, ok=False)
@@ -313,7 +318,7 @@ def tcp_transmit_close(data, ip, port, blocking):
         log_err(f"PFUIDNS: Unknown TCP Socket Exception! {e}")
 
     try:
-        if blocking:
+        if blocking and sent:  # Nothing to acknowledge if the send failed
             reply = conn.recv(36)  # Wait for pfui_firewall to ACK
             if reply != b"ACKUPDATE":
                 # The firewall replies with a reason when it refuses a message,
@@ -351,8 +356,11 @@ def transmit_all(pfui_dict, blocking=True):
             # JSON, optionally lz4 compressed. TCP adds a length prefix below
             pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
 
-            # Firewalls are updated serially; the circuit breaker keeps an
-            # unreachable one from adding its timeout to every query
+            # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
+            # Serial today: with BLOCKING each firewall's full round trip is added
+            # to the query. The circuit breaker keeps an unreachable one from
+            # contributing its timeout, but a healthy CARP pair still doubles the
+            # block time.
 
             if pfui_cfg["SOCKET_PROTO"] == "UDP":
                 udp_transmit_close(
@@ -500,8 +508,11 @@ def operate(id, event, qstate, qdata):
         f"pythonmod: MODULE_ERROR. Unknown EVENT; id {id}, event {event}, qstate {qstate}"
     )
     if qstate:
-        logger(qstate)
-    qstate.ext_state[id] = MODULE_ERROR
+        try:
+            logger(qstate)  # Best effort: derefs qstate.return_msg, which may be None
+        except Exception as e:
+            log_err(f"pythonmod: could not log qstate: {e}")
+        qstate.ext_state[id] = MODULE_ERROR
     return True
 
 

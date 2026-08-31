@@ -141,9 +141,9 @@ def test_read_rr_labels_the_source(plugin):
     from_cache = plugin.read_rr(FakeRep(), "example.com.", from_cache=True)
     assert from_reply["kind"] == "rr"
     assert from_cache["kind"] == "cache"
-    assert from_reply["AF4"] == [
-        {"ip": "8.8.8.8", "ttl": 3600, "qname": "example.com."}
-    ]
+    assert from_reply["AF4"] == [{"ip": "8.8.8.8", "ttl": 3600}]
+    # qname appears once for the whole message, not once per address
+    assert from_reply["qname"] == "example.com."
 
 
 def test_operate_finishes_on_moddone_without_a_reply(plugin):
@@ -157,3 +157,86 @@ def test_operate_finishes_on_moddone_without_a_reply(plugin):
     qstate = QState()
     assert plugin.operate(0, plugin.MODULE_EVENT_MODDONE, qstate, None) is True
     assert qstate.ext_state[0] == plugin.MODULE_FINISHED
+
+def test_rrsig_rdata_is_not_read_as_an_address(plugin):
+    """An rrset carries d.count addresses followed by d.rrsig_count signatures.
+    Reading the signatures as addresses whitelisted their trailing bytes, which
+    an attacker controls, so every signed answer leaked one arbitrary IP."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class FakeData:
+        count = 1  # one A record
+        rrsig_count = 1  # plus its signature
+        rr_ttl = [3600, 3600]
+        rr_data = [
+            b"\x00\x04" + bytes([8, 8, 8, 8]),  # the address
+            b"\x00\x88" + bytes(0x84) + bytes([136, 137, 138, 139]),  # signature
+        ]
+
+    class FakeKey:
+        type_str = "A"
+
+    class FakeRRset:
+        rk = FakeKey()
+
+        class entry:
+            data = FakeData()
+
+    class FakeRep:
+        rrset_count = 1
+        rrsets = [FakeRRset()]
+
+    msg = plugin.read_rr(FakeRep(), "signed.example.com.")
+    addresses = [r["ip"] for r in msg["AF4"]]
+    assert addresses == ["8.8.8.8"], f"signature bytes leaked as {addresses}"
+
+
+def test_rrsig_only_rrset_yields_nothing(plugin):
+    """A signature with no address alongside it must produce no records."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class FakeData:
+        count = 0
+        rrsig_count = 1
+        rr_ttl = [3600]
+        rr_data = [b"\x00\x88" + bytes([1, 2, 3, 4])]
+
+    class FakeKey:
+        type_str = "A"
+
+    class FakeRRset:
+        rk = FakeKey()
+
+        class entry:
+            data = FakeData()
+
+    class FakeRep:
+        rrset_count = 1
+        rrsets = [FakeRRset()]
+
+    assert plugin.read_rr(FakeRep(), "sig-only.example.com.") is False
+
+
+def test_zero_udp_retry_does_not_raise(plugin):
+    """UDP_RETRY: 0 skips the loop entirely; the summary log must still work."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class Soc:
+        def sendto(self, *a):
+            raise AssertionError("must not transmit when retry is 0")
+
+    assert plugin.udp_transmit(Soc(), b"x", "127.0.0.1", 10001, retry=0) is None
+
+
+def test_unknown_event_sets_module_error_even_if_logging_fails(plugin):
+    """The debug dump derefs qstate.return_msg; a failure there must not stop
+    the module from reporting MODULE_ERROR back to Unbound."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR"}
+
+    class QState:
+        return_msg = None  # logger() will raise on this
+        ext_state = {}
+
+    qstate = QState()
+    assert plugin.operate(0, 999, qstate, None) is True
+    assert qstate.ext_state[0] == plugin.MODULE_ERROR

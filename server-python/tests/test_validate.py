@@ -57,20 +57,17 @@ def test_version_mismatch_rejected():
 
 def test_extract_filters_and_canonicalises():
     records = [
-        {"ip": "8.8.8.8", "ttl": 3600, "qname": "a"},
-        {"ip": "0.0.0.0", "ttl": 3600, "qname": "sentinel"},
-        {"ip": "10.0.0.1", "ttl": 3600, "qname": "internal"},
-        {"ip": "8.8.4.4", "ttl": "300", "qname": "b"},
+        {"ip": "8.8.8.8", "ttl": 3600},
+        {"ip": "0.0.0.0", "ttl": 3600},
+        {"ip": "10.0.0.1", "ttl": 3600},
+        {"ip": "8.8.4.4", "ttl": "300"},
     ]
-    assert extract(records, version=4) == [
-        ("8.8.8.8", 3600, "a"),
-        ("8.8.4.4", 300, "b"),
-    ]
+    assert extract(records, version=4) == [("8.8.8.8", 3600), ("8.8.4.4", 300)]
 
 
 def test_extract_keeps_zero_ttl():
     """A ttl of 0 means do-not-cache, not absent; dropping it blocks egress."""
-    assert extract([{"ip": "8.8.8.8", "ttl": 0}], version=4) == [("8.8.8.8", 0, None)]
+    assert extract([{"ip": "8.8.8.8", "ttl": 0}], version=4) == [("8.8.8.8", 0)]
 
 
 def test_extract_tolerates_missing_and_malformed_records():
@@ -82,7 +79,7 @@ def test_extract_tolerates_missing_and_malformed_records():
         {"ip": "8.8.8.8", "ttl": "abc"},
         {"ip": "8.8.8.8", "ttl": 60},
     ]
-    assert extract(records, version=4) == [("8.8.8.8", 60, None)]
+    assert extract(records, version=4) == [("8.8.8.8", 60)]
 
 
 def test_extract_handles_none_input():

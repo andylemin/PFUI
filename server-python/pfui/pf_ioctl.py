@@ -59,7 +59,7 @@ class pfioc_table(Structure):  # From /usr/include/net/pfvar.h
         ("pfrio_size", c_int),  # total size of all elements
         ("pfrio_size2", c_int),
         ("pfrio_nadd", c_int),  # Returns number of addresses effectively added
-        ("pfrio_ndel", c_int),
+        ("pfrio_ndel", c_int),  # Returns number of addresses effectively deleted
         ("pfrio_nchange", c_int),
         ("pfrio_flags", c_int),
         ("pfrio_ticket", c_uint32),
@@ -143,7 +143,12 @@ def IOCTL(logger, dev: str, iocmd, af: AddressFamily, table: str, addrs: list):
 
     with open(dev, "w") as d:
         ioctl(d, iocmd, io)
-    return io.pfrio_nadd  # Successful commits
+
+    # The kernel counts adds and deletes in separate fields, so returning
+    # pfrio_nadd unconditionally reported 0 for every successful delete
+    if iocmd == DIOCRDELADDRS:
+        return io.pfrio_ndel
+    return io.pfrio_nadd
 
 
 def _IOWR(group, num, type):

@@ -39,7 +39,7 @@ from redis import StrictRedis
 from service import Service, find_syslog
 from yaml import safe_load
 
-from socket import AF_INET, AF_INET6, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET, SO_SNDBUF
+from socket import AF_INET, AF_INET6, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET
 from socket import SOCK_STREAM, IPPROTO_TCP, TCP_NODELAY, AddressFamily
 from socket import error as socket_error, timeout as socket_timeout
 from socket import socket
@@ -51,7 +51,11 @@ from pfui_wire import MAX_MESSAGE, WireError, decode, read_frame
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
-def db_push(logger, log: bool, db, table: str, data: list, kind: str, cfg: dict = None):
+# UDP mode only; see the receive loop in run(). TCP is bounded by MAX_MESSAGE.
+UDP_DGRAM_CEILING = 1400
+
+def db_push(logger, log: bool, db, table: str, data: list, kind: str, qname: str,
+            cfg: dict = None):
     """Store IP(s) and metadata to Redis database table.
 
     'kind' comes from the sender, which knows whether it read a relative RR TTL
@@ -66,7 +70,7 @@ def db_push(logger, log: bool, db, table: str, data: list, kind: str, cfg: dict 
     try:
         pipe = db.pipeline()
         now = int(time())
-        for ip, ttl, qname in data:
+        for ip, ttl in data:
             key = f"{table}^{ip}"
             if kind == "cache":
                 pipe.hmset(
@@ -203,7 +207,7 @@ class ScanSync(Thread):
 
     def join(self, timeout=30):  # Overload join from Thread super
         self.stop_event.set()
-        super().join()
+        super().join(timeout)
 
     def run(self):
         """Start Scanner loop"""
@@ -213,13 +217,17 @@ class ScanSync(Thread):
 
         try:
             while not self.stop_event.is_set():
-                # Clean Redis
-                self.scan_redis_db()
-                # Read Redis for sync. SCAN, never KEYS: KEYS blocks the whole
-                # server, and this runs every SCAN_PERIOD beside a resolver
-                keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
-                self.sync_pf_table(keys=keys)
-                self.sync_pf_file(keys=keys)
+                try:
+                    self.scan_redis_db()
+                    # Each sync reads its own Redis snapshot, after reading the
+                    # store it may delete from; see sync_pf_table
+                    self.sync_pf_table()
+                    self.sync_pf_file()
+                except Exception:
+                    # A transient fault must not end expiry for this table
+                    self.logger.exception(
+                        f"PFUIFW: Sync cycle failed for {self.table}, retrying next scan"
+                    )
                 for _ in range(int(self.cfg["SCAN_PERIOD"])):
                     if self.stop_event.is_set():
                         raise Break
@@ -264,7 +272,7 @@ class ScanSync(Thread):
                 ip_list=expired_ips,
             )
 
-    def sync_pf_table(self, keys=None):
+    def sync_pf_table(self):
         """
         Sync the Redis table with the PF Table. Reads the table with pfctl; DIOCRGETADDRS
         is not implemented (see DECISIONS.md)
@@ -276,27 +284,27 @@ class ScanSync(Thread):
 
         db_ips, t_ips = [], []
         try:
-            # Get all Redis IPs
-            if keys is None:
-                try:
-                    keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
-                except Exception:
-                    self.logger.exception("PFUIFW: Failed to get keys from Redis.")
-                    return
-            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
-
-            # Read the live PF table. pfctl costs a subprocess, but this runs
-            # once per SCAN_PERIOD, not per query (see DECISIONS.md)
+            # Order matters: read the PF table BEFORE Redis. Deletions below are
+            # driven by "in the table but not in Redis", so if Redis were read
+            # first, an IP whitelisted between the two reads would look orphaned
+            # and be deleted despite a live key. Reading Redis last can only
+            # retain an expired entry for one more cycle, which is harmless.
+            # pfctl costs a subprocess, but this runs once per SCAN_PERIOD, not
+            # per query (see DECISIONS.md)
             entries = list(
                 subprocess.Popen(
                     ["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE
                 ).stdout
             )
             t_ips = [l.decode("utf-8").strip() for l in entries]
+
+            keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
+            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
         except Exception:
-            self.logger.error(
-                f"PFUIFW: Failed to read and decode data for {self.table}"
+            self.logger.exception(
+                f"PFUIFW: Failed to read stores for {self.table}, skipping this sync"
             )
+            return  # Never diff against a partial read
 
         # Remove expired IPs from pf_table (Redis record purged)
         db_set, t_set = set(db_ips), set(t_ips)
@@ -323,7 +331,7 @@ class ScanSync(Thread):
                 ip_list=t_ips_add,
             )
 
-    def sync_pf_file(self, keys=None):
+    def sync_pf_file(self):
         """
         Sync the Redis DB with the PF File.
         """
@@ -334,19 +342,18 @@ class ScanSync(Thread):
 
         db_ips, f_ips = [], []
         try:
-            if keys is None:
-                try:
-                    keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
-                except Exception:
-                    self.logger.exception("PFUIFW: Failed to get keys from Redis.")
-                    return
-            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
-
+            # Read the file before Redis, for the reason given in sync_pf_table
             with open(self.file) as f:
                 content = f.readlines()
-            f_ips = [x.strip() for x in content if x != "\n" or ""]
+            f_ips = [x.strip() for x in content if x.strip()]
+
+            keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
+            db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
         except Exception:
-            self.logger.error(f"PFUIFW: Failed to read stores for {self.file}")
+            self.logger.exception(
+                f"PFUIFW: Failed to read stores for {self.file}, skipping this sync"
+            )
+            return  # Never diff against a partial read
 
         # Remove expired IPs from PF Table File (Redis record purged).
         # Set-based, so duplicate lines from file_push's appends collapse here.
@@ -401,7 +408,7 @@ class PFUI_Firewall(Service):
             if "SOCKET_BUFFER" not in self.cfg:
                 self.cfg["SOCKET_BUFFER"] = 1024
             if "SOCKET_BACKLOG" not in self.cfg:
-                self.cfg["SOCKET_BACKLOG"] = 5
+                self.cfg["SOCKET_BACKLOG"] = 128
             if "COMPRESS" not in self.cfg:
                 self.cfg["COMPRESS"] = True
             if "MAX_WORKERS" not in self.cfg:
@@ -531,9 +538,6 @@ class PFUI_Firewall(Service):
             self.conn.setsockopt(
                 SOL_SOCKET, SO_REUSEADDR, True
             )  # Fast Listen Socket reuse
-            self.conn.setsockopt(
-                SOL_SOCKET, SO_SNDBUF, 0
-            )  # Zero-size send Buffer (Send immediately)
             self.conn.settimeout(
                 self.cfg["SOCKET_TIMEOUT"]
             )  # accept() connection timeout to check TERM
@@ -544,6 +548,7 @@ class PFUI_Firewall(Service):
                 try:
                     # Hand each accepted connection to the pool
                     conn, (ip, port) = self.conn.accept()  # Waits self.conn.settimeout
+                    self._prepare_conn(conn)
                     if not self.slots.acquire(blocking=False):
                         # Shed rather than queue: PF still denies the traffic, and
                         # PFUI_Unbound sees a socket failure instead of a stall
@@ -560,6 +565,17 @@ class PFUI_Firewall(Service):
                         self.logger.exception("PFUIFW: Error starting receiver thread")
                 except socket_timeout:
                     continue
+                except socket_error as e:
+                    # accept() can fail transiently: ECONNABORTED when a peer
+                    # goes away, EMFILE/ENFILE under fd pressure. Neither is a
+                    # reason to stop serving.
+                    self.logger.error(f"PFUIFW: accept() failed, continuing. {e}")
+                    sleep(0.1)
+                    continue
+                except Exception:
+                    self.logger.exception("PFUIFW: Unexpected accept() error, continuing")
+                    sleep(0.5)
+                    continue
 
         # UDP is experimental and spoofable. The Unbound module runs per lookup, so
         # each lookup is a fresh exchange; with UDP defaults that caps out near 213qps
@@ -567,7 +583,6 @@ class PFUI_Firewall(Service):
             # setup listen socket
             self.soc = socket(AF_INET, SOCK_DGRAM)  # UDP Datagram Socket
             self.soc.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
-            self.soc.setsockopt(SOL_SOCKET, SO_SNDBUF, 36)  # 'ACK' = 36bytes
             self.soc.settimeout(
                 self.cfg["SOCKET_TIMEOUT"]
             )  # recvfrom() data timeout to check TERM
@@ -575,7 +590,27 @@ class PFUI_Firewall(Service):
 
             while not self.got_sigterm():  # Watch Socket until TERM
                 try:
-                    dgram, (ip, port) = self.soc.recvfrom(1400)
+                    # KNOWN LIMITATION, UDP mode only: this buffer is the hard
+                    # ceiling on a PFUI message over UDP. A larger datagram is
+                    # truncated by the kernel, the decode then fails, and the
+                    # answer is never whitelisted. Reading one byte past the
+                    # ceiling is what makes that detectable instead of silent.
+                    #
+                    # Raising the buffer would not make large answers work: a
+                    # datagram above the link MTU fragments, and PF commonly
+                    # drops fragments. UDP mode therefore cannot carry the large
+                    # answers TCP handles via MAX_MESSAGE, and this is one reason
+                    # UDP is gated behind ALLOW_INSECURE_UDP. TCP has no such
+                    # limit; use it.
+                    dgram, (ip, port) = self.soc.recvfrom(UDP_DGRAM_CEILING + 1)
+                    if len(dgram) > UDP_DGRAM_CEILING:
+                        self.logger.error(
+                            f"PFUIFW: Datagram from {ip}:{port} exceeds the "
+                            f"{UDP_DGRAM_CEILING} byte UDP ceiling "
+                            f"({len(dgram)}+ bytes); dropping. This answer cannot "
+                            f"be whitelisted over UDP - switch SOCKET_PROTO to TCP."
+                        )
+                        continue
                     # ACKDATA is sent by receiver_thread once the datagram has
                     # decoded to a valid PFUI structure, so this cannot be used
                     # as a blind reflector
@@ -607,6 +642,22 @@ class PFUI_Firewall(Service):
         self.db.close()
         self.logger.info("PFUIFW: [-] PFUI_Firewall Service Stopped.")
 
+    def _prepare_conn(self, conn):
+        """Apply per-connection options to a freshly accepted socket.
+
+        accept() does not carry over the listener's settings: Python returns the
+        new socket in blocking mode with no timeout, so without this a peer that
+        connects and stalls occupies a worker slot permanently. TCP_NODELAY is
+        set here too rather than relying on inheritance from the listener, which
+        is not guaranteed across platforms.
+        """
+        conn.settimeout(float(self.cfg["SOCKET_TIMEOUT"]))
+        try:
+            conn.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)
+        except Exception:  # Not fatal; costs latency, not correctness
+            self.logger.exception("PFUIFW: Could not set TCP_NODELAY on connection")
+        return conn
+
     def _submit(self, **kwargs):
         """Run receiver_thread in the pool, releasing its slot when it finishes."""
         future = self.pool.submit(self.receiver_thread, **kwargs)
@@ -623,9 +674,11 @@ class PFUI_Firewall(Service):
     def receiver_thread(self, proto, conn=None, dgram=None, ip=None, port=None):
         """Receive all data, update PF Table and Redis DB
         Data Structure:
-        {'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl, 'qname': qname}], 'AF6': [{"ip": ipv6_addr, "ttl": ip_ttl, 'qname': qname}]}
+        {'kind': 'rr'|'cache', 'qname': qname, 'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl}], 'AF6': [...]}
         For performance, we want entire message sent in a single segment, with small socket buffers (no delay).
-        Ensure SOCKET_BUFFER is small, but large enough for maximum expected record size.
+        SOCKET_BUFFER is the read chunk size, not a message limit; message size is
+        bounded by the protocol's MAX_MESSAGE. Raising it costs memory per
+        connection and saves syscalls on large answers.
         """
 
         def disconnect(proto, soc, conn, msg):
@@ -637,11 +690,15 @@ class PFUI_Firewall(Service):
             self.logger.info(f"PFUIFW: Close msg: {msg}")
 
             if proto == "UDP":
-                try:
-                    soc.sendto(msg, (ip, port))
-                except Exception:
-                    pass  # PFUI_Unbound may have closed socket already (non-blocking cache responses)
-                # Do not soc.close(), as this stop listening socket
+                # Only reply to a datagram that validated. A refusal sent to an
+                # unverified source address would make this a reflector, the very
+                # thing that moving ACKDATA after validation prevents.
+                if msg == b"ACKUPDATE":
+                    try:
+                        soc.sendto(msg, (ip, port))
+                    except Exception:
+                        pass  # PFUI_Unbound may have closed socket already (non-blocking cache responses)
+                # Do not soc.close(), as this stops the listening socket
             elif proto == "TCP":
                 try:
                     conn.sendall(msg)
@@ -711,6 +768,7 @@ class PFUI_Firewall(Service):
         # Input Request
         af4_data, af6_data = [], []
         kind = data.get("kind") if isinstance(data, dict) else None
+        qname = data.get("qname", "") if isinstance(data, dict) else ""
         if kind not in ("rr", "cache"):
             self.logger.error(
                 f"PFUIFW: Message has no valid 'kind' ({kind}), dropping. "
@@ -788,6 +846,7 @@ class PFUI_Firewall(Service):
                 table=self.cfg["AF4_TABLE"],
                 data=af4_data,
                 kind=kind,
+                qname=qname,
                 cfg=self.cfg,
             )
         if af6_data:
@@ -798,6 +857,7 @@ class PFUI_Firewall(Service):
                 table=self.cfg["AF6_TABLE"],
                 data=af6_data,
                 kind=kind,
+                qname=qname,
                 cfg=self.cfg,
             )
 

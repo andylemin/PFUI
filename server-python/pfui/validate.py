@@ -34,7 +34,7 @@ def routable(address, version=None):
 
 
 def extract(records, version):
-    """(ip, ttl, qname) tuples for every routable record of `version`.
+    """(ip, ttl) tuples for every routable record of `version`.
 
     A ttl of 0 is valid ("do not cache") and must not be discarded, so the test
     is against None rather than truthiness.
@@ -50,5 +50,5 @@ def extract(records, version):
             ttl = int(rr["ttl"])
         except (ValueError, TypeError):
             continue
-        out.append((ip, ttl, rr.get("qname")))
+        out.append((ip, ttl))
     return out

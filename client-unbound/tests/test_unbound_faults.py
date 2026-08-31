@@ -54,16 +54,16 @@ def test_message_without_kind_is_rejected():
 def test_sentinel_addresses_are_not_whitelisted():
     for ip in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0"):
         key = "AF4" if "." in ip else "AF6"
-        msg = {"AF4": [], "AF6": [], "kind": "rr"}
-        msg[key] = [{"ip": ip, "ttl": 3600, "qname": "sentinel."}]
+        msg = {"AF4": [], "AF6": [], "kind": "rr", "qname": "test."}
+        msg[key] = [{"ip": ip, "ttl": 3600}]
         assert_rejected(send_raw(encode(msg, compress=COMPRESS)))
 
 
 def test_internal_addresses_are_not_whitelisted():
     """A DNS answer pointing inside the network must not authorise egress."""
     for ip in ("10.0.0.1", "192.168.1.1", "127.0.0.1", "100.64.0.1"):
-        msg = {"AF4": [{"ip": ip, "ttl": 3600, "qname": "rebind."}], "AF6": [],
-               "kind": "rr"}
+        msg = {"AF4": [{"ip": ip, "ttl": 3600}], "AF6": [],
+               "kind": "rr", "qname": "test."}
         assert_rejected(send_raw(encode(msg, compress=COMPRESS)))
 
 
@@ -77,7 +77,7 @@ def test_zero_declared_length_is_refused():
 
 
 def test_truncated_payload_is_refused():
-    blob = encode({"AF4": [{"ip": "1.1.1.1", "ttl": 3600}], "AF6": [], "kind": "rr"},
+    blob = encode({"AF4": [{"ip": "1.1.1.1", "ttl": 3600}], "AF6": [], "kind": "rr", "qname": "test."},
                   compress=COMPRESS)
     assert_rejected(send_raw(blob[: len(blob) // 2]))
 
@@ -98,8 +98,8 @@ def test_decompression_bomb_is_refused():
 def test_daemon_still_serves_after_every_fault():
     """The whole point: none of the above may have taken the daemon down."""
     good = encode(
-        {"AF4": [{"ip": "1.1.1.1", "ttl": 3600, "qname": "recover."}], "AF6": [],
-         "kind": "rr"},
+        {"AF4": [{"ip": "1.1.1.1", "ttl": 3600}], "AF6": [],
+         "kind": "rr", "qname": "test."},
         compress=COMPRESS,
     )
     assert send_raw(good) == b"ACKUPDATE"
@@ -113,8 +113,8 @@ def test_connection_opened_and_closed_without_data():
         conn.connect((HOST, PORT))
         conn.close()
     good = encode(
-        {"AF4": [{"ip": "1.1.1.1", "ttl": 60, "qname": "empty."}], "AF6": [],
-         "kind": "rr"},
+        {"AF4": [{"ip": "1.1.1.1", "ttl": 60}], "AF6": [],
+         "kind": "rr", "qname": "test."},
         compress=COMPRESS,
     )
     assert send_raw(good) == b"ACKUPDATE"
