@@ -19,13 +19,18 @@ declared here and called by Unbound depending on EVENT type
 """
 
 import sys
-from os.path import dirname, realpath
+from os.path import dirname
 from sys import exit
 from time import time
 from yaml import safe_load
 
-# Unbound embeds the interpreter, so this module's directory is not on sys.path
-sys.path.insert(0, dirname(realpath(__file__)))
+CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
+
+# Unbound runs this file in the embedded interpreter's __main__ namespace, so the
+# directory holding it is not on sys.path and __file__ cannot be relied on. The
+# installer puts the shared pfui/ package beside this config, so derive it from
+# there: one hardcoded location, same as CONFIG_LOCATION itself.
+sys.path.insert(0, dirname(CONFIG_LOCATION))
 from pfui.wire import encode_payload, frame  # noqa: E402
 
 from socket import (
@@ -42,8 +47,6 @@ from socket import (
 from socket import error as ERROR
 from socket import inet_ntop, ntohs, socket
 from socket import timeout as TIMEOUT
-
-CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
 
 
 def data_to_hex(data, prefix=""):
