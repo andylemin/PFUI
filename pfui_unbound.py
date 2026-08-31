@@ -247,6 +247,36 @@ def udp_transmit_close(data, ip, port, blocking):
     soc.close()
 
 
+# Per-firewall circuit breaker state: {(ip, port): [consecutive_failures, open_until]}
+_breakers = {}
+
+
+def breaker_open(ip, port):
+    """True while this firewall is in its cool-off window."""
+    state = _breakers.get((ip, port))
+    if not state:
+        return False
+    if state[1] > time():
+        return True
+    state[0], state[1] = 0, 0  # Cool-off elapsed, probe again
+    return False
+
+
+def breaker_record(ip, port, ok):
+    """Count consecutive failures and open the breaker once the threshold trips."""
+    state = _breakers.setdefault((ip, port), [0, 0])
+    if ok:
+        state[0], state[1] = 0, 0
+        return
+    state[0] += 1
+    if state[0] >= int(pfui_cfg["BREAKER_FAILURES"]):
+        state[1] = time() + float(pfui_cfg["BREAKER_COOLOFF"])
+        log_err(
+            f"PFUIDNS: {ip}:{port} unreachable {state[0]}x, skipping it for "
+            f"{pfui_cfg['BREAKER_COOLOFF']}s (PF still denies the traffic)"
+        )
+
+
 def tcp_transmit_close(data, ip, port, blocking):
     conn = socket(AF_INET, SOCK_STREAM)
     conn.settimeout(pfui_cfg["SOCKET_TIMEOUT"])
@@ -264,15 +294,19 @@ def tcp_transmit_close(data, ip, port, blocking):
     try:
         conn.connect((ip, port))
         conn.sendall(frame(data))
+        breaker_record(ip, port, ok=True)
     except TIMEOUT:
+        breaker_record(ip, port, ok=False)
         log_err(
             "PFUIDNS: TCP Socket Timeout to firewall! Check pfui_firewall is running."
         )
     except ERROR:
+        breaker_record(ip, port, ok=False)
         log_err(
             "PFUIDNS: TCP Socket Error! Check pfui_firewall is running."
         )
     except Exception as e:
+        breaker_record(ip, port, ok=False)
         log_err(f"PFUIDNS: Unknown TCP Socket Exception! {e}")
 
     try:
@@ -297,10 +331,14 @@ def transmit_all(pfui_dict, blocking=True):
 
     for fw in pfui_cfg["FIREWALLS"]:
         if fw["HOST"]:
-            if "PORT" not in fw:
-                fw["PORT"] = pfui_cfg["DEFAULT_PORT"]
+            port = fw.get("PORT", pfui_cfg["DEFAULT_PORT"])  # Do not mutate pfui_cfg
+            if breaker_open(fw["HOST"], port):
+                log_info(
+                    f"PFUIDNS: Skipping {fw['HOST']}:{port}, circuit breaker open"
+                )
+                continue
             if pfui_cfg["LOGGING"]:
-                log_info(f"PFUIDNS: Sending '{pfui_dict}' to {fw['HOST']}:{fw['PORT']}")
+                log_info(f"PFUIDNS: Sending '{pfui_dict}' to {fw['HOST']}:{port}")
 
             # JSON, optionally lz4 compressed. TCP adds a length prefix below
             pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
@@ -311,14 +349,14 @@ def transmit_all(pfui_dict, blocking=True):
                 udp_transmit_close(
                 data=pfui_data,
                 ip=fw["HOST"],
-                port=fw["PORT"],
+                port=port,
                 blocking=blocking
             )
             elif pfui_cfg["SOCKET_PROTO"] == "TCP":
                 tcp_transmit_close(
                 data=pfui_data,
                 ip=fw["HOST"],
-                port=fw["PORT"],
+                port=port,
                 blocking=blocking
             )
 
@@ -469,6 +507,10 @@ if __name__ == "__main__":
             pfui_cfg["UDP_RETRY"] = 3
         if "UDP_ACK_TIMEOUT" not in pfui_cfg:
             pfui_cfg["UDP_ACK_TIMEOUT"] = 0.5
+        if "BREAKER_FAILURES" not in pfui_cfg:
+            pfui_cfg["BREAKER_FAILURES"] = 3
+        if "BREAKER_COOLOFF" not in pfui_cfg:
+            pfui_cfg["BREAKER_COOLOFF"] = 30
 
     except Exception as e:
         log_err(

@@ -32,7 +32,8 @@ from contextlib import contextmanager
 from ctypes import *
 from fcntl import LOCK_EX, LOCK_UN, flock, ioctl
 from logging.handlers import SysLogHandler
-from threading import Event, Thread
+from concurrent.futures import ThreadPoolExecutor
+from threading import BoundedSemaphore, Event, Thread
 from time import sleep, time
 
 from redis import StrictRedis
@@ -639,6 +640,10 @@ class PFUI_Firewall(Service):
                 self.cfg["SOCKET_BACKLOG"] = 5
             if "COMPRESS" not in self.cfg:
                 self.cfg["COMPRESS"] = True
+            if "MAX_WORKERS" not in self.cfg:
+                self.cfg["MAX_WORKERS"] = 32
+            if "ALLOW_INSECURE_UDP" not in self.cfg:
+                self.cfg["ALLOW_INSECURE_UDP"] = False
             if "REDIS_HOST" not in self.cfg:
                 self.cfg["REDIS_HOST"] = "127.0.0.1"
             if "REDIS_PORT" not in self.cfg:
@@ -734,6 +739,23 @@ class PFUI_Firewall(Service):
             sys.exit(4)
         self.logger.info("PFUIFW: [+] PFUI_Firewall Service Started.")
 
+        # Bounded worker pool. ThreadPoolExecutor alone would not degrade
+        # gracefully: its queue is unbounded, so a flood still holds one accepted
+        # fd per queued item until fds or memory run out.
+        workers = int(self.cfg["MAX_WORKERS"])
+        self.max_inflight = workers * 2
+        self.pool = ThreadPoolExecutor(max_workers=workers)
+        self.slots = BoundedSemaphore(self.max_inflight)
+
+        if self.cfg["SOCKET_PROTO"] == "UDP" and not self.cfg["ALLOW_INSECURE_UDP"]:
+            self.logger.error(
+                "PFUIFW: UDP mode is spoofable (a datagram source address is not "
+                "verified) and is intended for lab use only. Set "
+                "ALLOW_INSECURE_UDP: True in /etc/pfui_firewall.yml to proceed, "
+                "or use SOCKET_PROTO: TCP."
+            )
+            sys.exit(5)
+
         # Listen for connections
         # Default TCP time_wait = 60; 64000 / 60 = 1,066qps
         # sysctl net.inet.tcp.keepidle=10; 64000 / 10 = 6,400qps
@@ -756,19 +778,21 @@ class PFUI_Firewall(Service):
 
             while not self.got_sigterm():  # Watch Socket until TERM
                 try:
-                    # Start receive thread for each received update
+                    # Hand each accepted connection to the pool
                     conn, (ip, port) = self.conn.accept()  # Waits self.conn.settimeout
+                    if not self.slots.acquire(blocking=False):
+                        # Shed rather than queue: PF still denies the traffic, and
+                        # PFUI_Unbound sees a socket failure instead of a stall
+                        self.logger.error(
+                            f"PFUIFW: At capacity ({self.max_inflight}), shedding {ip}:{port}"
+                        )
+                        conn.close()
+                        continue
                     try:
-                        Thread(
-                            target=self.receiver_thread,
-                            kwargs={
-                                "proto": "TCP",
-                                "conn": conn,
-                                "ip": ip,
-                                "port": port,
-                            },
-                        ).start()
-                    except:
+                        self._submit(proto="TCP", conn=conn, ip=ip, port=port)
+                    except Exception:
+                        self.slots.release()
+                        conn.close()
                         self.logger.exception("PFUIFW: Error starting receiver thread")
                 except socket_timeout:
                     continue
@@ -788,9 +812,9 @@ class PFUI_Firewall(Service):
             while not self.got_sigterm():  # Watch Socket until TERM
                 try:
                     dgram, (ip, port) = self.soc.recvfrom(1400)
-                    # ACK PFUI_Unbound (UDP)
-                    self.soc.sendto(b"ACKDATA", (ip, port))
-                    self.logger.info(f"PFUIFW: Sent 'ACKDATA' to {(ip, port)}")
+                    # ACKDATA is sent by receiver_thread once the datagram has
+                    # decoded to a valid PFUI structure, so this cannot be used
+                    # as a blind reflector
                 except socket_timeout:
                     continue
                 except socket_error:
@@ -800,25 +824,37 @@ class PFUI_Firewall(Service):
                     sleep(0.5)
                     continue
 
-                if dgram:  # Start receive thread for each received update
+                if dgram:  # Hand each datagram to the pool
+                    if not self.slots.acquire(blocking=False):
+                        self.logger.error(
+                            f"PFUIFW: At capacity ({self.max_inflight}), dropping {ip}:{port}"
+                        )
+                        continue
                     try:
-                        Thread(
-                            target=self.receiver_thread,
-                            kwargs={
-                                "proto": "UDP",
-                                "dgram": dgram,
-                                "ip": ip,
-                                "port": port,
-                            },
-                        ).start()
-                    except:
+                        self._submit(proto="UDP", dgram=dgram, ip=ip, port=port)
+                    except Exception:
+                        self.slots.release()
                         self.logger.exception("PFUIFW: Error in receiver thread")
 
         # Shut down
+        self.pool.shutdown(wait=True)
         for t in self.threads:
             t.join()
         self.db.close()
         self.logger.info("PFUIFW: [-] PFUI_Firewall Service Stopped.")
+
+    def _submit(self, **kwargs):
+        """Run receiver_thread in the pool, releasing its slot when it finishes."""
+        future = self.pool.submit(self.receiver_thread, **kwargs)
+        future.add_done_callback(self._task_done)
+
+    def _task_done(self, future):
+        self.slots.release()
+        exc = future.exception()
+        if exc is not None:
+            # Futures store exceptions instead of reaching threading.excepthook,
+            # so without this a recurring receiver failure would be silent
+            self.logger.error(f"PFUIFW: Receiver task failed: {exc!r}", exc_info=exc)
 
     def receiver_thread(self, proto, conn=None, dgram=None, ip=None, port=None):
         """Receive all data, update PF Table and Redis DB
@@ -937,6 +973,13 @@ class PFUI_Firewall(Service):
             )
             disconnect(proto, self.soc, conn, msg="Invalid datatype")
             return False
+
+        if proto == "UDP":
+            # Post-validation, so an unvalidated datagram cannot elicit a reply
+            try:
+                self.soc.sendto(b"ACKDATA", (ip, port))
+            except Exception:
+                self.logger.exception(f"PFUIFW: Failed to ACKDATA {ip}:{port}")
 
         if self.stats:
             vtime = time()
