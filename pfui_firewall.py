@@ -1054,7 +1054,8 @@ if __name__ == "__main__":
         exit(1)
 
     cmd = sys.argv[1].lower()
-    service = PFUI_Firewall("pfui_firewall", pid_dir="/var/run")
+    # /var/run is root-owned; rc_pre creates this directory for the daemon user
+    service = PFUI_Firewall("pfui_firewall", pid_dir="/var/run/pfui")
 
     if cmd == "start":
         if not service.is_running():
@@ -1085,7 +1086,7 @@ if __name__ == "__main__":
         else:
             exit(1)
 
-    elif cmd == "restart" or cmd == "reload":
+    elif cmd == "restart":
         while service.is_running():
             print("PFUI_Firewall is stopping.")
             service.stop()

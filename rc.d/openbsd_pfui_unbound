@@ -1,29 +1,26 @@
 #!/bin/ksh
 #
-# $OpenBSD: unbound,v 1.5 2018/01/11 21:09:26 rpe Exp $
-
-# Modified version of built-in Unbound rc.d script for Unbound version with Python Module support
+# rc.d(8) script for Unbound built with Python module support (PFUI_Unbound)
 
 daemon="/usr/local/sbin/unbound"
 daemon_flags="-c /var/unbound/etc/pfui_unbound.conf"
-daemon_user="root"  # root used only to bind listen port before dropping back to _unbound user
+daemon_user="root"  # Unbound binds :53 as root, then drops to _unbound itself
 
 . /etc/rc.d/rc.subr
 
-pexp="/usr/local/sbin/unbound ${daemon_flags}"
+pexp="${daemon} ${daemon_flags}"
 
 rc_pre() {
-	rcctl start redis
-	if grep '^[[:space:]]*auto-trust-anchor-file:' \
-            /var/unbound/etc/pfui_unbound.conf > /dev/null 2>&1; then
+	if grep -q '^[[:space:]]*auto-trust-anchor-file:' \
+	    /var/unbound/etc/pfui_unbound.conf; then
 		/usr/local/sbin/unbound-anchor -v || true
 	fi
+	# Last, so a bad config aborts the start instead of taking the resolver down
 	/usr/local/sbin/unbound-checkconf /var/unbound/etc/pfui_unbound.conf
 }
 
-rc_start() {
-	echo ${rcexec}
-	/usr/local/sbin/unbound ${daemon_flags}
-}
+# No rc_start override: Unbound takes its config as a flag, so rc.subr's default
+# ${rcexec} "${daemon} ${daemon_flags}" is correct, and keeping it means
+# rcctl reload still sends the SIGHUP that Unbound implements as a real reload.
 
 rc_cmd $1
