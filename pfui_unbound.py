@@ -18,11 +18,20 @@ declared here and called by Unbound depending on EVENT type
 :param rr: DNS Resource Record
 """
 
-import lz4.frame
-from json import dumps
-from sys import exit, getsizeof
+import sys
+from os.path import dirname
+from sys import exit
 from time import time
 from yaml import safe_load
+
+CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
+
+# Unbound runs this file in the embedded interpreter's __main__ namespace, so the
+# directory holding it is not on sys.path and __file__ cannot be relied on. The
+# installer puts the shared pfui/ package beside this config, so derive it from
+# there: one hardcoded location, same as CONFIG_LOCATION itself.
+sys.path.insert(0, dirname(CONFIG_LOCATION))
+from pfui.wire import encode_payload, frame  # noqa: E402
 
 from socket import (
     AF_INET,
@@ -38,8 +47,6 @@ from socket import (
 from socket import error as ERROR
 from socket import inet_ntop, ntohs, socket
 from socket import timeout as TIMEOUT
-
-CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
 
 
 def data_to_hex(data, prefix=""):
@@ -106,9 +113,13 @@ def logger(qstate):
     log_info("-" * 100)
 
 
-def read_rr(rep=None, qname_str=""):
+def read_rr(rep=None, qname_str="", from_cache=False):
     """PFUI: Inspects RR response data, extracts IPs and TTLs, and returns PFUI Firewall data structure.
-    Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl }]}
+    Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl }],
+                     'kind': 'rr'|'cache'}
+    On the cache path Unbound reports rr_ttl as an absolute expiry timestamp, on
+    the reply path as a relative TTL. 'kind' records which, so the firewall does
+    not have to guess from the magnitude.
     """
 
     if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
@@ -167,7 +178,11 @@ def read_rr(rep=None, qname_str=""):
                         )
 
     if ipv4_resps or ipv6_resps:
-        return {"AF4": ipv4_resps, "AF6": ipv6_resps}
+        return {
+            "AF4": ipv4_resps,
+            "AF6": ipv6_resps,
+            "kind": "cache" if from_cache else "rr",
+        }
     else:
         return False
 
@@ -214,10 +229,12 @@ def udp_transmit_close(data, ip, port, blocking):
     # setup udp socket
     soc = socket(AF_INET, SOCK_DGRAM)
     soc.setsockopt(SOL_SOCKET, SO_SNDBUF, 1400)
-    soc.settimeout(pfui_cfg["SOCKET_TIMEOUT"])
+    # ACK wait is deliberately shorter than SOCKET_TIMEOUT: with 40 retries at
+    # 3s each a down firewall blocked the resolver for ~2 minutes per query
+    soc.settimeout(float(pfui_cfg["UDP_ACK_TIMEOUT"]))
 
     # transmit pf firewall data
-    reply = udp_transmit(soc, data, ip, port, 40)
+    reply = udp_transmit(soc, data, ip, port, int(pfui_cfg["UDP_RETRY"]))
 
     # wait for pf firewall update
     if blocking:  # Wait for secondary ACKUPDATE
@@ -231,6 +248,36 @@ def udp_transmit_close(data, ip, port, blocking):
 
     # close sender udp socket
     soc.close()
+
+
+# Per-firewall circuit breaker state: {(ip, port): [consecutive_failures, open_until]}
+_breakers = {}
+
+
+def breaker_open(ip, port):
+    """True while this firewall is in its cool-off window."""
+    state = _breakers.get((ip, port))
+    if not state:
+        return False
+    if state[1] > time():
+        return True
+    state[0], state[1] = 0, 0  # Cool-off elapsed, probe again
+    return False
+
+
+def breaker_record(ip, port, ok):
+    """Count consecutive failures and open the breaker once the threshold trips."""
+    state = _breakers.setdefault((ip, port), [0, 0])
+    if ok:
+        state[0], state[1] = 0, 0
+        return
+    state[0] += 1
+    if state[0] >= int(pfui_cfg["BREAKER_FAILURES"]):
+        state[1] = time() + float(pfui_cfg["BREAKER_COOLOFF"])
+        log_err(
+            f"PFUIDNS: {ip}:{port} unreachable {state[0]}x, skipping it for "
+            f"{pfui_cfg['BREAKER_COOLOFF']}s (PF still denies the traffic)"
+        )
 
 
 def tcp_transmit_close(data, ip, port, blocking):
@@ -249,22 +296,31 @@ def tcp_transmit_close(data, ip, port, blocking):
 
     try:
         conn.connect((ip, port))
-        conn.sendall(data + b"EOT")
+        conn.sendall(frame(data))
+        breaker_record(ip, port, ok=True)
     except TIMEOUT:
+        breaker_record(ip, port, ok=False)
         log_err(
             "PFUIDNS: TCP Socket Timeout to firewall! Check pfui_firewall is running."
         )
     except ERROR:
+        breaker_record(ip, port, ok=False)
         log_err(
             "PFUIDNS: TCP Socket Error! Check pfui_firewall is running."
         )
     except Exception as e:
+        breaker_record(ip, port, ok=False)
         log_err(f"PFUIDNS: Unknown TCP Socket Exception! {e}")
 
     try:
         if blocking:
-            _ = conn.recv(36)  # Wait for pfui_firewall to ACK(36)
-            # TODO Verify ACK/NACK message
+            reply = conn.recv(36)  # Wait for pfui_firewall to ACK
+            if reply != b"ACKUPDATE":
+                # The firewall replies with a reason when it refuses a message,
+                # e.g. a version skew that leaves the wire format mismatched
+                log_err(
+                    f"PFUIDNS: {ip}:{port} did not confirm the update: {reply!r}"
+                )
     except TIMEOUT:
         log_err(
             "PFUIDNS: Timeout waiting for pfui_firewall ACK."
@@ -283,30 +339,33 @@ def transmit_all(pfui_dict, blocking=True):
 
     for fw in pfui_cfg["FIREWALLS"]:
         if fw["HOST"]:
-            if "PORT" not in fw:
-                fw["PORT"] = pfui_cfg["DEFAULT_PORT"]
+            port = fw.get("PORT", pfui_cfg["DEFAULT_PORT"])  # Do not mutate pfui_cfg
+            if breaker_open(fw["HOST"], port):
+                log_info(
+                    f"PFUIDNS: Skipping {fw['HOST']}:{port}, circuit breaker open"
+                )
+                continue
             if pfui_cfg["LOGGING"]:
-                log_info(f"PFUIDNS: Sending '{pfui_dict}' to {fw['HOST']}:{fw['PORT']}")
+                log_info(f"PFUIDNS: Sending '{pfui_dict}' to {fw['HOST']}:{port}")
 
-            # Encode JSON bytes, and (optional) Compress
-            pfui_data = bytes(dumps(pfui_dict), "utf8")
-            if pfui_cfg["COMPRESS"]:
-                pfui_data = lz4.frame.compress(pfui_data)
+            # JSON, optionally lz4 compressed. TCP adds a length prefix below
+            pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
 
-            # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
+            # Firewalls are updated serially; the circuit breaker keeps an
+            # unreachable one from adding its timeout to every query
 
             if pfui_cfg["SOCKET_PROTO"] == "UDP":
                 udp_transmit_close(
                 data=pfui_data,
                 ip=fw["HOST"],
-                port=fw["PORT"],
+                port=port,
                 blocking=blocking
             )
             elif pfui_cfg["SOCKET_PROTO"] == "TCP":
                 tcp_transmit_close(
                 data=pfui_data,
                 ip=fw["HOST"],
-                port=fw["PORT"],
+                port=port,
                 blocking=blocking
             )
 
@@ -328,7 +387,7 @@ def inplace_cache_callback(
         )
 
     if rep is not None:
-        pfui_msg = read_rr(rep, qinfo.qname_str)
+        pfui_msg = read_rr(rep, qinfo.qname_str, from_cache=True)
         if pfui_msg:
             transmit_all(pfui_msg, blocking=False)
 
@@ -453,6 +512,14 @@ if __name__ == "__main__":
             pfui_cfg["SOCKET_PROTO"] = "TCP"
         if "BLOCKING" not in pfui_cfg:
             pfui_cfg["BLOCKING"] = True
+        if "UDP_RETRY" not in pfui_cfg:
+            pfui_cfg["UDP_RETRY"] = 3
+        if "UDP_ACK_TIMEOUT" not in pfui_cfg:
+            pfui_cfg["UDP_ACK_TIMEOUT"] = 0.5
+        if "BREAKER_FAILURES" not in pfui_cfg:
+            pfui_cfg["BREAKER_FAILURES"] = 3
+        if "BREAKER_COOLOFF" not in pfui_cfg:
+            pfui_cfg["BREAKER_COOLOFF"] = 30
 
     except Exception as e:
         log_err(

@@ -57,12 +57,18 @@ This allows to; halt DoH/DoT tunneling, stop BYOD bypasses, limit Ransomware Com
 stop DNS exfiltration, block outbound VPNs, and impede viruses, worms and malware etc.
 
 Good DNS settings should also ensure risks like DNS-rebinding attacks and CNAME cloaking are not possible, and Q-NAME minimisation is enabled.
+PFUI enforces this independently of the resolver's configuration: only globally routable unicast
+addresses are installed into the PF tables, so an answer pointing at private, loopback, link-local,
+CGNAT or multicast space is refused. The example `pfui_unbound.conf` sets the matching
+`private-address` ranges, and the example `pf.conf` blocks that space at the packet layer as well.
 PFUI_Unbound uses Unbound's Python module interface to transmit the successfully resolved IPs (and TTL) information, 
 using TCP, to OpenBSD PF Firewall(s). PFUI_Firewall then uses OpenBSD's IOCTL Kernel to update the PF tables.
 NB; Since OpenBSD 7.0, IOCTL is unlocked from Kernel CPU lock (this change allowed PFUI to become production worthy).
 
-PFUI_Unbound can notify the resolved IPs, and PFUI_Firewall can ACK (PF Table updated) in around 1ms, 
-on moderate i7 hardware. A fully recursive DNS query can take tens to hundreds of milliseconds to resolve the resource records 
+PFUI_Unbound can notify the resolved IPs, and PFUI_Firewall can ACK (PF Table updated) in a few
+milliseconds on moderate hardware (measured at 3300-4200 microseconds on an i5 with 1GbE; enable
+`LOGGING` with `LOG_LEVEL: DEBUG` to measure it on your own network, and note that logging itself
+adds latency). A fully recursive DNS query can take tens to hundreds of milliseconds to resolve the resource records 
 (on a fast internet connection), so the delay added by PFUI is undetectable for the total client query time. And often improves overall performance due to not downloading adverts and tracking widgets.
 
 ------
@@ -73,13 +79,16 @@ up to OpenBSD 7.4, Unbound 1.18, Python 3.10
 ### 1) Install PFUI_Firewall on OpenBSD PF Firewall(s)
 ```
 pkg_add bash
-pfui_firewall_install.sh
+git clone https://github.com/andylemin/PFUI.git && cd PFUI
+doas ./pfui_firewall_install.sh
 ```
 * 1b) Now add IP Reputation Block Lists to PF Firewalls (optional/recommended);\
 https://www.geoghegan.ca/pfbadhost.html \
 https://www.geoghegan.ca/pub/pf-badhost/latest/man/man.txt
 
 For high Qps rates, we need to increase OpenBSD's max-threads-per-proc
+Apply now, and add the same lines to `/etc/sysctl.conf` so they survive a reboot
+(runtime `sysctl` is not persistent):
 ```
 sysctl kern.maxthread=8000  # OpenBSD
 sysctl kern.somaxconn=1024
@@ -89,7 +98,8 @@ sysctl net.inet.tcp.ackonpush=1
 ### 2) Install PFUI_Unbound on Internal Unbound DNS Server(s)
 ```
 pkg_add bash
-pfui_unbound_install.sh
+git clone https://github.com/andylemin/PFUI.git && cd PFUI
+doas ./pfui_unbound_install.sh
 ```
 Note the following lines in the example Unbound `/var/unbound/etc/pfui_unbound.conf` file after install (copy these to your own Unbound config or use the example);
 ```
@@ -110,6 +120,7 @@ See [Unbound-Adblock](#unboundadblock) section
 
 For high Qps rates (>1000 Qps) increase the max-procs and max-threads-per-proc.
 If you have a slow/long internet connection (query threads persist longer) then increasing these may still be useful
+Again, add these to `/etc/sysctl.conf` as well as applying them:
 ```
 sysctl kern.maxproc=8000
 sysctl kern.maxthread=8000
@@ -210,7 +221,7 @@ PFUI_Firewall - Supports OpenBSD (FreeBSD still in alpha), requires Python 3.
 Unbound with PFUI_Firewall - Does **not** currently support running Unbound with 'chroot'. TODO Python dependencies must
 also reside in the jail. Virtualenv planned for PFUI release candidate.
 
-pfui_firewall.sh (/usr/local/sbin/pfui_firewall) - uses an excplicit '#!/usr/local/bin/python3' hash-bang rather than
+pfui_firewall.py (/usr/local/sbin/pfui_firewall) - uses an excplicit '#!/usr/local/bin/python3' hash-bang rather than
 usual 'env python3' to occasional boot autostart sequeunce issues.
 
 Some browsers tend to cache DNS responses longer than the DNS RRs TTL value! This is bad practice and causes issues

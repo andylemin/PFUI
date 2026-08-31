@@ -9,6 +9,12 @@ UNBOUND_BRANCH="branch-1.18.0"  # Stable Unbound branch to use if HEAD is not bu
 err=0
 trap 'err=1' ERR
 
+# Abort immediately on a step nothing can proceed without
+die() {
+  echo "PFUIDNS: FATAL: $*" >&2
+  exit 1
+}
+
 args=("$@")
 TARGET=${args[0]}
 if [[ -z ${TARGET} ]]; then  # True if length zero
@@ -78,39 +84,44 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo
   echo "Would you like to update the OpenBSD System and Ports source trees; /usr/ports, /usr/src, /usr/src"
-  read -p "(WARNING: Deletes any local tree changes) y/n: " yn
+  echo "WARNING: this DELETES /usr/ports/* and /usr/src/* after verifying the"
+  echo "         signed replacements. Any local changes in those trees are lost."
+  read -p "Type 'yes' to proceed, anything else to skip: " yn
+  [ "$yn" = "yes" ] && yn="y"
   if [[ "$yn" = "y" ]]; then
+    REL=$(uname -r)
+    echo "PFUIDNS: Downloading OpenBSD ${REL} sources to /tmp"
+    for f in ports src sys; do
+      curl -fsSL "https://cdn.openbsd.org/pub/OpenBSD/${REL}/${f}.tar.gz" \
+        -o "/tmp/${f}.tar.gz" || die "download of ${f}.tar.gz failed"
+    done
+    curl -fsSL "https://cdn.openbsd.org/pub/OpenBSD/${REL}/SHA256.sig" \
+      -o /tmp/SHA256.sig || die "download of SHA256.sig failed"
+
+    # Verify BEFORE touching /usr/src or /usr/ports. Previously signify's exit
+    # status was ignored and the trees were deleted before any download
+    # succeeded, so a failed fetch left the host with no sources at all and
+    # unverified content was extracted as root.
+    cd /tmp || die "cannot cd /tmp"
+    signify -Cp "/etc/signify/openbsd-$(echo "${REL}" | cut -c 1,3)-base.pub" \
+      -x SHA256.sig ports.tar.gz src.tar.gz sys.tar.gz \
+      || die "source signature verification FAILED, /usr/src and /usr/ports untouched"
+    echo "PFUIDNS: Signatures verified"
+
     echo "PFUIDNS: Cleaning OpenBSD Sources base (can take a while)"
     rm -rf /usr/ports/*
     rm -rf /usr/src/*
-    cd /tmp/ || exit
-    echo "PFUIDNS: Downloading Ports Sources: ports"
-    curl "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/ports.tar.gz" > "./ports.tar.gz"
-    curl "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/SHA256.sig" > "./SHA256.sig"
-    signify -Cp "/etc/signify/openbsd-$(uname -r | cut -c 1,3)-base.pub" -x SHA256.sig ports.tar.gz
-    echo "PFUIDNS: Downloading System Sources: src"
-    curl "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/src.tar.gz" > "./src.tar.gz"
-    curl "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/SHA256.sig" > "./SHA256.sig"
-    signify -Cp "/etc/signify/openbsd-$(uname -r | cut -c 1,3)-base.pub" -x SHA256.sig src.tar.gz
-    echo "PFUIDNS: Downloading System Sources: sys"
-    curl "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/sys.tar.gz" > "./sys.tar.gz"
-    curl "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/SHA256.sig" > "./SHA256.sig"
-    signify -Cp "/etc/signify/openbsd-$(uname -r | cut -c 1,3)-base.pub" -x SHA256.sig sys.tar.gz
-    echo
 
     echo "PFUIDNS: Extracting Ports Sources: ports (can take a while)"
-    cd /usr || exit
-    tar xzf /tmp/ports.tar.gz
+    cd /usr || die "cannot cd /usr"
+    tar xzf /tmp/ports.tar.gz || die "extract of ports.tar.gz failed"
     echo "PFUIDNS: Extracting System Sources: src (can take a while)"
-    cd /usr/src || exit
-    tar xzf /tmp/src.tar.gz
+    cd /usr/src || die "cannot cd /usr/src"
+    tar xzf /tmp/src.tar.gz || die "extract of src.tar.gz failed"
     echo "PFUIDNS: Extracting System Sources: sys (can take a while)"
-    tar xzf /tmp/sys.tar.gz
+    tar xzf /tmp/sys.tar.gz || die "extract of sys.tar.gz failed"
     echo "PFUIDNS: Removing downloaded sources"
-    rm /tmp/ports.tar.gz
-    rm /tmp/src.tar.gz
-    rm /tmp/sys.tar.gz
-    rm /tmp/SHA256.sig
+    rm -f /tmp/ports.tar.gz /tmp/src.tar.gz /tmp/sys.tar.gz /tmp/SHA256.sig
     echo "PFUIDNS: System Sources update complete"
   else
     echo "PFUIDNS: Using your existing System Sources"
@@ -118,23 +129,19 @@ if [[ "$OS" = "OpenBSD" ]]; then
   fi
 
 elif [[ "$OS" = "FreeBSD" ]]; then
-  echo "PFUIDNS: Installing Python3"
-  pkg install python39
-  pkg install py39-setuptools
-  pkg install py37-pip
-
-  echo "PFUIDNS: Installing Package Dependencies"
-  pkg install swig git cmake libconfig libiconv bison gawk mawk devel/gettext
-
-  if [[ -z ${TARGET} ]]; then  # True if length zero
-    TARGET="/var/unbound/conf.d"
-    echo "PFUIDNS: Using default TARGET $TARGET"
-  fi
+  # The FreeBSD path never built Unbound (that block is OpenBSD-only) and then
+  # ran the OpenBSD-only tail regardless, so it could only ever half-install.
+  echo "PFUIDNS: FreeBSD support is not implemented yet (README calls it alpha)."
+  echo "PFUIDNS: PFUI_Unbound must currently be installed on OpenBSD."
+  exit 3
 fi
 
 echo
 echo "PFUIDNS: Installing PFUI Python dependencies"
-python3 -m pip install pyyaml lz4
+# The resolver runs unchrooted (chroot: "" in pfui_unbound.conf), so the module
+# imports these from the system interpreter's site-packages
+python3 -m pip install -r "${DIR}/requirements-unbound.txt" \
+  || die "cannot install Python dependencies"
 
 if [[ "$OS" = "OpenBSD" ]]; then
   if [ ! -d "${TARGET}" ]; then
@@ -198,21 +205,26 @@ if [[ "$OS" = "OpenBSD" ]]; then
   read -p "Would you like to install the example pfui_unbound.yml (existing will be backed up) y/n: " yn
   if [[ "$yn" = "y" ]]; then
     [ -f "${TARGET}/pfui_unbound.yml" ] && mv "${TARGET}/pfui_unbound.yml" "${TARGET}/pfui_unbound.yml.${HOUR}"
-    install -m 775 -o _unbound -g _unbound "${DIR}"/pfui_unbound.yml ${TARGET}/pfui_unbound.yml
+    install -m 644 -o root -g wheel "${DIR}"/pfui_unbound.yml ${TARGET}/pfui_unbound.yml
   fi
   echo "Default pfui_unbound config: ${TARGET}/pfui_unbound.yml"
 
   # Install PFUI_Unbound module script
-  install -m 775 -o _unbound -g _unbound "${DIR}"/pfui_unbound.py ${TARGET}/pfui_unbound.py
+  install -m 644 -o root -g wheel "${DIR}"/pfui_unbound.py ${TARGET}/pfui_unbound.py
+  # Shared modules; pfui_unbound.py adds its own directory to sys.path to reach these
+  install -d -m 755 -o root -g wheel ${TARGET}/pfui
+  install -m 644 -o root -g wheel "${DIR}"/pfui/__init__.py "${DIR}"/pfui/wire.py ${TARGET}/pfui/
   # Install PFUI_Unbound RC script
-  install -m 555 -o _unbound -g _unbound "${DIR}"/rc.d/openbsd_pfui_unbound /etc/rc.d/pfui_unbound
+  # root-owned: rcctl runs this as root, and a file's owner can always chmod it
+  install -m 555 -o root -g wheel "${DIR}"/rc.d/openbsd_pfui_unbound /etc/rc.d/pfui_unbound
 
   echo
   echo "PFUIDNS: Installing Root Hints and example DNS-BL"
   [ -f "${TARGET}/update_root_hints.sh" ] && mv "${TARGET}/update_root_hints.sh" "${TARGET}/update_root_hints.sh.${HOUR}"
-  install -m 775 -o _unbound -g _unbound "${DIR}"/update_root_hints.sh ${TARGET}/update_root_hints.sh
+  # root-owned: these run from cron with the privilege to write /var/unbound and restart the service
+  install -m 755 -o root -g wheel "${DIR}"/update_root_hints.sh ${TARGET}/update_root_hints.sh
   [ -f "${TARGET}/update_dns_blocklist.sh" ] && mv "${TARGET}/update_dns_blocklist.sh" "${TARGET}/update_dns_blocklist.sh.${HOUR}"
-  install -m 775 -o _unbound -g _unbound "${DIR}"/update_dns_blocklist.sh ${TARGET}/update_dns_blocklist.sh
+  install -m 755 -o root -g wheel "${DIR}"/update_dns_blocklist.sh ${TARGET}/update_dns_blocklist.sh
   echo "New scripts: ${TARGET}/update_root_hints.sh, ${TARGET}/update_dns_blocklist.sh"
 
   # Install Unbound example configuration with PFUI_Unbound enabled
@@ -221,9 +233,8 @@ if [[ "$OS" = "OpenBSD" ]]; then
   if [[ "$yn" = "y" ]]; then
     echo "Installing example ${TARGET}/pfui_unbound.conf"
     [ -f "${TARGET}/pfui_unbound.conf" ] && mv "${TARGET}/pfui_unbound.conf" "${TARGET}/pfui_unbound.conf.${HOUR}"
-    install -m 775 -o _unbound -g _unbound "${DIR}/pfui_unbound.conf" "${TARGET}/pfui_unbound.conf"
-    cp -f "${DIR}/pfui_unbound.conf" "${TARGET}/pfui_unbound.conf"
-    chmod 644 ${TARGET}/pfui_unbound.conf
+    install -m 644 -o root -g wheel "${DIR}/examples/pfui_unbound.conf" \
+      "${TARGET}/pfui_unbound.conf" || die "cannot install pfui_unbound.conf"
   fi
   echo "Default pfui_unbound config: ${TARGET}/pfui_unbound.conf"
 fi
@@ -241,26 +252,17 @@ echo "Checking Unbound configuration"
 /usr/local/sbin/unbound-anchor -v
 /usr/local/sbin/unbound-checkconf ${TARGET}/pfui_unbound.conf
 
-PATH_UPDATE="export 'PATH=/usr/local/sbin:${PATH}'"
-if ! grep -Fxq "$PATH_UPDATE" ~/.zshrc > /dev/null
-then
-  echo "Updating ~/.zshrc PATH to use latest unbound with Python module support"
-  echo "$PATH_UPDATE" >> ~/.zshrc
-fi
-if ! grep -Fxq "$PATH_UPDATE" ~/.kshrc > /dev/null
-then
-  echo "Updating ~/.kshrc PATH to use latest unbound with Python module support"
-  echo "$PATH_UPDATE" >> ~/.kshrc
-fi
-if ! grep -Fxq "$PATH_UPDATE" ~/.bashrc > /dev/null
-then
-  echo "Updating ~/.bashrc PATH to use latest unbound with Python module support"
-  echo "$PATH_UPDATE" >> ~/.bashrc
-fi
+# Not written automatically: the previous version expanded ${PATH} at install
+# time and appended a frozen snapshot to root's .zshrc, .kshrc and .bashrc.
+echo
+echo "PFUIDNS: /usr/local/sbin must precede /usr/sbin in PATH to pick up the"
+echo "         Unbound built here. Add this to your shell rc file if needed:"
+echo '         export PATH=/usr/local/sbin:$PATH'
 
 echo
 if [[ $err != 0 ]]; then
   echo "PFUIDNS: All built, but with some errors. Please investigate."
+  exit 1
 else
   echo "PFUIDNS: All built successfully 🍾"
 fi
@@ -289,7 +291,6 @@ echo "Stop built-in Unbound daemon;    'rcctl stop unbound'"
 echo "Disable built-in Unbound daemon; 'rcctl disable unbound'"
 echo "Enable Unbound (+pythonmodule);"
 echo "                                 'rcctl enable pfui_unbound'"
-echo "                                 'rcctl set pfui_unbound flags '-c /var/unbound/etc/pfui_unbound.conf' '"
 echo "Start Unbound (+pythonmodule);   'rcctl start pfui_unbound'"
 echo
 echo "4) Setup a DNS blocklist source. Eg, https://www.geoghegan.ca/unbound-adblock.html (See README for PFUI compatibility and install steps)"

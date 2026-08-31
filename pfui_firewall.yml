@@ -13,6 +13,8 @@ SOCKET_TIMEOUT: 3             # Timeout on Socket session between PFUI_Unbound a
 SOCKET_BUFFER: 1024           # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
 SOCKET_BACKLOG: 5             # How many network connections can be queued up waiting to be accepted
 COMPRESS: True                # Compress and Decompress PFUI_Unbound->PFUI_Firewall data
+MAX_WORKERS: 32               # Receiver thread pool size. Twice this many connections may be in flight before shedding
+ALLOW_INSECURE_UDP: False     # UDP mode is spoofable (lab use only). SOCKET_PROTO: UDP refuses to start unless True
 
 # Database
 REDIS_HOST: 127.0.0.1         # IP for Redis Server
@@ -25,6 +27,6 @@ TTL_MULTIPLIER: 4             # Expire entries after RR TTL * TTL_MULTIPLIER (Br
 CTL: IOCTL                    # IOCTL = ioctl kernel interface (recommended, requires DEVPF), PFCTL = pfctl cli interface
 DEVPF: /dev/pf                # PF ioctl interface
 AF4_TABLE: pfui_ipv4_domains            # IPv4 PF Table
-AF4_FILE: /var/spool/pfui_ipv4_domains  # IPv4 PF Persist file - Used during PF reload
+AF4_FILE: /var/spool/pfui/pfui_ipv4_domains  # IPv4 PF Persist file - Used during PF reload
 AF6_TABLE: pfui_ipv6_domains            # IPv6 PF Table
-AF6_FILE: /var/spool/pfui_ipv6_domains  # IPv6 PF Persist file - Used during PF reload
+AF6_FILE: /var/spool/pfui/pfui_ipv6_domains  # IPv6 PF Persist file - Used during PF reload

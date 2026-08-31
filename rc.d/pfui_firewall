@@ -1,37 +1,43 @@
 #!/bin/ksh
 #
-# $OpenBSD: unbound,v 1.5 2018/01/11 21:09:26 rpe Exp $
+# rc.d(8) script for PFUI_Firewall
 
 daemon="/usr/local/sbin/pfui_firewall"
-daemon_flags=""
-daemon_user="_pfui_firewall"  # TODO Chroot with /dev/pf ioctl access
+daemon_user="_pfui_firewall"
 
 . /etc/rc.d/rc.subr
 
-pexp="python.* pfui_firewall.*"
+# pgrep -xf matches the whole command line, which starts with the interpreter
+# from pfui_firewall's shebang, not with "python"
+pexp="/usr/local/bin/python3 ${daemon}.*"
 
+rc_pre() {
+	# /var/run is root-owned, and OpenBSD's MAKEDEV resets /dev/pf's mode on
+	# release upgrades, so both are re-established on every start
+	install -d -o _pfui_firewall -g _pfui_firewall -m 755 /var/run/pfui
+	chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf
+}
+
+# The daemon takes its verb positionally, so ${daemon} ${daemon_flags} cannot be
+# used. ${rcexec} is what applies daemon_user; calling ${daemon} directly would
+# run as whoever invoked rcctl.
 rc_start() {
-        $daemon start
-        sleep 3
+	${rcexec} "${daemon} start"
 }
 
 rc_stop() {
-        $daemon stop
-        echo "Waiting for all threads to finish" && sleep 3
-}
-
-rc_restart() {
-        $daemon restart
-        sleep 5
-}
-
-rc_reload() {
-        $daemon reload
-        sleep 5
+	${rcexec} "${daemon} stop"
 }
 
 rc_check() {
-        $daemon check
+	${rcexec} "${daemon} check"
+}
+
+# Must stay: rc.subr's default rc_reload sends SIGHUP, which the daemon does not
+# handle, so Python's default disposition would terminate it.
+rc_reload() {
+	echo "PFUIFW: reload unsupported, use 'rcctl restart pfui_firewall'"
+	return 1
 }
 
 rc_cmd $1
