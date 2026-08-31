@@ -226,10 +226,12 @@ def udp_transmit_close(data, ip, port, blocking):
     # setup udp socket
     soc = socket(AF_INET, SOCK_DGRAM)
     soc.setsockopt(SOL_SOCKET, SO_SNDBUF, 1400)
-    soc.settimeout(pfui_cfg["SOCKET_TIMEOUT"])
+    # ACK wait is deliberately shorter than SOCKET_TIMEOUT: with 40 retries at
+    # 3s each a down firewall blocked the resolver for ~2 minutes per query
+    soc.settimeout(float(pfui_cfg["UDP_ACK_TIMEOUT"]))
 
     # transmit pf firewall data
-    reply = udp_transmit(soc, data, ip, port, 40)
+    reply = udp_transmit(soc, data, ip, port, int(pfui_cfg["UDP_RETRY"]))
 
     # wait for pf firewall update
     if blocking:  # Wait for secondary ACKUPDATE
@@ -463,6 +465,10 @@ if __name__ == "__main__":
             pfui_cfg["SOCKET_PROTO"] = "TCP"
         if "BLOCKING" not in pfui_cfg:
             pfui_cfg["BLOCKING"] = True
+        if "UDP_RETRY" not in pfui_cfg:
+            pfui_cfg["UDP_RETRY"] = 3
+        if "UDP_ACK_TIMEOUT" not in pfui_cfg:
+            pfui_cfg["UDP_ACK_TIMEOUT"] = 0.5
 
     except Exception as e:
         log_err(

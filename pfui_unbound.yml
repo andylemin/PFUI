@@ -8,6 +8,8 @@ LOG_LEVEL: ERROR       # 'DEBUG', 'INFO' (testing), 'ERROR' (production)
 
 # Networking
 SOCKET_TIMEOUT: 3      # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall
+UDP_RETRY: 3           # UDP mode only; resends until ACKDATA arrives (UDP has no delivery guarantee)
+UDP_ACK_TIMEOUT: 0.5   # UDP mode only; seconds to wait for each ACKDATA. Retries * this is the worst-case query stall
 COMPRESS: True         # Compress and Decompress PFUI_Unbound->PFUI_Firewall data
 
 DEFAULT_PORT: 10001    # Default port where PFUI_Firewall is listening

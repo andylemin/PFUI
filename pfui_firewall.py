@@ -288,7 +288,7 @@ def table_pop(
         return 0
 
 
-def db_push(logger, log: bool, db, table: str, data: list, kind: str):
+def db_push(logger, log: bool, db, table: str, data: list, kind: str, cfg: dict = None):
     """Store IP(s) and metadata to Redis database table.
 
     'kind' comes from the sender, which knows whether it read a relative RR TTL
@@ -311,6 +311,8 @@ def db_push(logger, log: bool, db, table: str, data: list, kind: str):
                     {"epoch": now, "kind": "cache", "expires": int(ttl), "qname": qname},
                 )
                 pipe.hdel(key, "ttl")
+                if cfg:
+                    pipe.expire(key, max(int(ttl) - now, 0) + int(cfg["SCAN_PERIOD"]))
             else:
                 pipe.hmset(
                     key,
@@ -322,6 +324,12 @@ def db_push(logger, log: bool, db, table: str, data: list, kind: str):
                     },
                 )
                 pipe.hdel(key, "expires")
+                if cfg:
+                    pipe.expire(
+                        key,
+                        max(int(ttl), 3600) * int(cfg["TTL_MULTIPLIER"])
+                        + int(cfg["SCAN_PERIOD"]),
+                    )
         pipe.execute()
         return True
     except Exception:
@@ -444,8 +452,9 @@ class ScanSync(Thread):
             while not self.stop_event.is_set():
                 # Clean Redis
                 self.scan_redis_db()
-                # Read Redis for sync
-                keys = self.db.keys(f"{self.table}*")
+                # Read Redis for sync. SCAN, never KEYS: KEYS blocks the whole
+                # server, and this runs every SCAN_PERIOD beside a resolver
+                keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
                 self.sync_pf_table(keys=keys)
                 self.sync_pf_file(keys=keys)
                 for _ in range(int(self.cfg["SCAN_PERIOD"])):
@@ -506,8 +515,8 @@ class ScanSync(Thread):
             # Get all Redis IPs
             if keys is None:
                 try:
-                    keys = self.db.keys(f"{self.table}*")
-                except:
+                    keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
+                except Exception:
                     self.logger.exception("PFUIFW: Failed to get keys from Redis.")
                     return
             db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
@@ -525,7 +534,8 @@ class ScanSync(Thread):
             )
 
         # Remove expired IPs from pf_table (Redis record purged)
-        t_ips_del = [t_ip for t_ip in t_ips if t_ip not in db_ips]
+        db_set, t_set = set(db_ips), set(t_ips)
+        t_ips_del = list(t_set - db_set)
         if t_ips_del:
             table_pop(
                 logger=self.logger,
@@ -537,7 +547,7 @@ class ScanSync(Thread):
             )
 
         # Add any missing IPs into pf_table (Active Redis record)
-        t_ips_add = [db_ip for db_ip in db_ips if db_ip not in t_ips]
+        t_ips_add = list(db_set - t_set)
         if t_ips_add:
             table_push(
                 logger=self.logger,
@@ -561,8 +571,8 @@ class ScanSync(Thread):
         try:
             if keys is None:
                 try:
-                    keys = self.db.keys(f"{self.table}*")
-                except:
+                    keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
+                except Exception:
                     self.logger.exception("PFUIFW: Failed to get keys from Redis.")
                     return
             db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
@@ -573,8 +583,10 @@ class ScanSync(Thread):
         except:
             self.logger.error(f"PFUIFW: Failed to read stores for {self.file}")
 
-        # Remove expired IPs from PF Table File (Redis record purged)
-        f_ips_del = [f_ip for f_ip in f_ips if f_ip not in db_ips]
+        # Remove expired IPs from PF Table File (Redis record purged).
+        # Set-based, so duplicate lines from file_push's appends collapse here.
+        db_set, f_set = set(db_ips), set(f_ips)
+        f_ips_del = list(f_set - db_set)
         if f_ips_del:
             file_pop(
                 logger=self.logger,
@@ -584,7 +596,7 @@ class ScanSync(Thread):
             )
 
         # Add any missing IPs to the PF Table File (Active Redis record)
-        f_ips_add = [db_ip for db_ip in db_ips if db_ip not in f_ips]
+        f_ips_add = list(db_set - f_set)
         if f_ips_add:
             file_push(
                 logger=self.logger,
@@ -669,6 +681,11 @@ class PFUI_Firewall(Service):
         self.logger.addHandler(
             SysLogHandler(address=find_syslog(), facility=SysLogHandler.LOG_DAEMON)
         )
+        # Both the timing probes and the summary below use this one flag
+        self.stats = (
+            bool(self.cfg["LOGGING"]) and self.cfg["LOG_LEVEL"] == "DEBUG"
+        )
+
         if self.cfg["LOG_LEVEL"] == "DEBUG":
             self.logger.setLevel(logging.DEBUG)
         elif self.cfg["LOG_LEVEL"] == "INFO":
@@ -833,7 +850,7 @@ class PFUI_Firewall(Service):
                 finally:
                     conn.close()
 
-        if self.cfg["LOGGING"]:
+        if self.stats:
             stime = time()
 
         # Read data from network
@@ -887,7 +904,7 @@ class PFUI_Firewall(Service):
                 disconnect(proto, self.soc, conn, "Failed to decode")
                 return
 
-        if self.cfg["LOGGING"]:
+        if self.stats:
             ntime = time()
             self.logger.info(f"PFUIFW: Received {data} from {ip}:{port} ({proto})")
 
@@ -921,7 +938,7 @@ class PFUI_Firewall(Service):
             disconnect(proto, self.soc, conn, msg="Invalid datatype")
             return False
 
-        if self.cfg["LOGGING"]:
+        if self.stats:
             vtime = time()
 
         # Update PF Tables
@@ -946,12 +963,13 @@ class PFUI_Firewall(Service):
 
         if self.cfg["LOGGING"]:
             self.logger.info(f"PFUIFW: PF Table updated {af4_data}, {af6_data}")
+        if self.stats:
             ttime = time()
 
         # Unblock PFUI_Unbound DNS Client
         disconnect(proto, self.soc, conn, msg="ACKUPDATE")
 
-        if self.cfg["LOGGING"]:
+        if self.stats:
             n1time = time()
 
         # Update Redis DB
@@ -963,6 +981,7 @@ class PFUI_Firewall(Service):
                 table=self.cfg["AF4_TABLE"],
                 data=af4_data,
                 kind=kind,
+                cfg=self.cfg,
             )
         if af6_data:
             db_push(
@@ -972,9 +991,10 @@ class PFUI_Firewall(Service):
                 table=self.cfg["AF6_TABLE"],
                 data=af6_data,
                 kind=kind,
+                cfg=self.cfg,
             )
 
-        if self.cfg["LOGGING"]:
+        if self.stats:
             rtime = time()
 
         # Update PF Table Persist Files
@@ -993,31 +1013,23 @@ class PFUI_Firewall(Service):
                 ip_list=[x[0] for x in af6_data],
             )
 
-        # Print statistics
-        if self.cfg["LOGGING"]:
+        # Print statistics; one structured line, so DEBUG stays affordable
+        if self.stats:
             etime = time()
-            tntime = (ntime - stime) * (10**6)  # Network Receive Time
-            tvtime = (vtime - ntime) * (10**6)  # Data Validation Time
-            tptime = (ttime - vtime) * (10**6)  # PF Table Write Time
-            tn1time = (n1time - ttime) * (10**6)  # Network Acknowledge Time
-            tcbtime = (n1time - stime) * (10**6)  # Approximate client block Time
-            trtime = (rtime - n1time) * (10**6)  # Redis Update Time
-            tftime = (etime - rtime) * (10**6)  # File Update Time
-            ttime = (etime - stime) * (10**6)  # Total Time
-            self.logger.info("PFUIFW: Network Latency {0:.2f} microsecs".format(tntime))
             self.logger.info(
-                "PFUIFW: Data Check Latency {0:.2f} microsecs".format(tvtime)
+                "PFUIFW: latency microsecs "
+                "network={0:.2f} check={1:.2f} pf={2:.2f} ack={3:.2f} "
+                "client_block={4:.2f} redis={5:.2f} file={6:.2f} total={7:.2f}".format(
+                    (ntime - stime) * (10**6),
+                    (vtime - ntime) * (10**6),
+                    (ttime - vtime) * (10**6),
+                    (n1time - ttime) * (10**6),
+                    (n1time - stime) * (10**6),
+                    (rtime - n1time) * (10**6),
+                    (etime - rtime) * (10**6),
+                    (etime - stime) * (10**6),
+                )
             )
-            self.logger.info(
-                "PFUIFW: PF Update Latency {0:.2f} microsecs".format(tptime)
-            )
-            self.logger.info("PFUIFW: ACK Latency {0:.2f} microsecs".format(tn1time))
-            self.logger.info(
-                "PFUIFW: Client block time {0:.2f} microsecs".format(tcbtime)
-            )
-            self.logger.info("PFUIFW: Redis Latency {0:.2f} microsecs".format(trtime))
-            self.logger.info("PFUIFW: File Latency {0:.2f} microsecs".format(tftime))
-            self.logger.info("PFUIFW: Total Latency {0:.2f} microsecs".format(ttime))
 
 
 if __name__ == "__main__":
