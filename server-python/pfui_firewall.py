@@ -54,7 +54,8 @@ CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 # UDP mode only; see the receive loop in run(). TCP is bounded by MAX_MESSAGE.
 UDP_DGRAM_CEILING = 1400
 
-def db_push(logger, log: bool, db, table: str, data: list, kind: str, cfg: dict = None):
+def db_push(logger, log: bool, db, table: str, data: list, kind: str, qname: str,
+            cfg: dict = None):
     """Store IP(s) and metadata to Redis database table.
 
     'kind' comes from the sender, which knows whether it read a relative RR TTL
@@ -69,7 +70,7 @@ def db_push(logger, log: bool, db, table: str, data: list, kind: str, cfg: dict 
     try:
         pipe = db.pipeline()
         now = int(time())
-        for ip, ttl, qname in data:
+        for ip, ttl in data:
             key = f"{table}^{ip}"
             if kind == "cache":
                 pipe.hmset(
@@ -660,7 +661,7 @@ class PFUI_Firewall(Service):
     def receiver_thread(self, proto, conn=None, dgram=None, ip=None, port=None):
         """Receive all data, update PF Table and Redis DB
         Data Structure:
-        {'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl, 'qname': qname}], 'AF6': [{"ip": ipv6_addr, "ttl": ip_ttl, 'qname': qname}]}
+        {'kind': 'rr'|'cache', 'qname': qname, 'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl}], 'AF6': [...]}
         For performance, we want entire message sent in a single segment, with small socket buffers (no delay).
         Ensure SOCKET_BUFFER is small, but large enough for maximum expected record size.
         """
@@ -752,6 +753,7 @@ class PFUI_Firewall(Service):
         # Input Request
         af4_data, af6_data = [], []
         kind = data.get("kind") if isinstance(data, dict) else None
+        qname = data.get("qname", "") if isinstance(data, dict) else ""
         if kind not in ("rr", "cache"):
             self.logger.error(
                 f"PFUIFW: Message has no valid 'kind' ({kind}), dropping. "
@@ -829,6 +831,7 @@ class PFUI_Firewall(Service):
                 table=self.cfg["AF4_TABLE"],
                 data=af4_data,
                 kind=kind,
+                qname=qname,
                 cfg=self.cfg,
             )
         if af6_data:
@@ -839,6 +842,7 @@ class PFUI_Firewall(Service):
                 table=self.cfg["AF6_TABLE"],
                 data=af6_data,
                 kind=kind,
+                qname=qname,
                 cfg=self.cfg,
             )
 

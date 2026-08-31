@@ -5,7 +5,8 @@ Normative description of what a PFUI client sends to a PFUI server. Any client
 (`server-python/`, `server-c/`) must agree with this document, and both are
 tested against the shared vectors in `vectors/`.
 
-Version: 1. There is no version field on the wire; see
+Version: 2 (`qname` moved from each record to the message). There is no version
+field on the wire; see
 [Compatibility](#compatibility).
 
 ## Transport
@@ -75,19 +76,27 @@ runs.
 ```json
 {
   "kind": "rr",
-  "AF4": [{"ip": "8.8.8.8",             "ttl": 3600, "qname": "example.com."}],
-  "AF6": [{"ip": "2001:4860:4860::8888", "ttl": 3600, "qname": "example.com."}]
+  "qname": "example.com.",
+  "AF4": [{"ip": "8.8.8.8", "ttl": 3600}],
+  "AF6": [{"ip": "2001:4860:4860::8888", "ttl": 3600}]
 }
 ```
 
 | Field | Type | Meaning |
 |-------|------|---------|
 | `kind` | `"rr"` or `"cache"` | How to read every `ttl` in this message. Required. |
+| `qname` | string | The query name every record in this message answers. Optional; `""` if unknown. |
 | `AF4` | array | IPv4 records. May be empty or absent. |
 | `AF6` | array | IPv6 records. May be empty or absent. |
 | `AF*[].ip` | string | Address in presentation form. |
 | `AF*[].ttl` | integer | See `kind`. `0` is valid and means do-not-cache. |
-| `AF*[].qname` | string | Query name, for logging. Optional. |
+
+`qname` is a property of the message, not of each address: one message carries
+one reply, and every address in it answers the same query. Repeating it per
+record cost roughly half the uncompressed payload for a 24-address answer (2021
+bytes against 940). Compression hid almost all of that on the wire — 262 bytes
+against 261 — so the saving is mostly in what an uncompressed deployment sends
+and in not implying the fields can differ.
 
 `kind` is what removes the guesswork that used to come from TTL magnitude:
 

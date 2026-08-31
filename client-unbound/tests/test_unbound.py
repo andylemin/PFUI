@@ -43,17 +43,17 @@ def send(msg, expect_reply=True):
 
 
 def test_single_ipv4_answer_is_acknowledged():
-    reply = send({"AF4": [{"ip": "1.1.1.1", "ttl": 3600, "qname": "test."}],
-                  "AF6": [], "kind": "rr"})
+    reply = send({"AF4": [{"ip": "1.1.1.1", "ttl": 3600}],
+                  "AF6": [], "kind": "rr", "qname": "test."})
     assert reply == b"ACKUPDATE"
 
 
 def test_dual_stack_answer_is_acknowledged():
     reply = send(
         {
-            "AF4": [{"ip": "1.1.1.1", "ttl": 3600, "qname": "test."}],
-            "AF6": [{"ip": "2606:4700:4700::1111", "ttl": 3600, "qname": "test."}],
-            "kind": "rr",
+            "AF4": [{"ip": "1.1.1.1", "ttl": 3600}],
+            "AF6": [{"ip": "2606:4700:4700::1111", "ttl": 3600}],
+            "kind": "rr", "qname": "test.",
         }
     )
     assert reply == b"ACKUPDATE"
@@ -65,9 +65,9 @@ def test_cache_kind_answer_is_acknowledged():
 
     reply = send(
         {
-            "AF4": [{"ip": "1.0.0.1", "ttl": int(time.time()) + 3600, "qname": "test."}],
+            "AF4": [{"ip": "1.0.0.1", "ttl": int(time.time()) + 3600}],
             "AF6": [],
-            "kind": "cache",
+            "kind": "cache", "qname": "test.",
         }
     )
     assert reply == b"ACKUPDATE"
@@ -78,10 +78,10 @@ def test_large_answer_survives_reassembly():
     2 x SOCKET_BUFFER used to lose its leading bytes and be dropped."""
     msg = {
         "AF4": [
-            {"ip": f"1.1.{i // 254}.{i % 254 + 1}", "ttl": 3600, "qname": "big."}
+            {"ip": f"1.1.{i // 254}.{i % 254 + 1}", "ttl": 3600}
             for i in range(500)
         ],
         "AF6": [],
-        "kind": "rr",
+        "kind": "rr", "qname": "test.",
     }
     assert send(msg) == b"ACKUPDATE"

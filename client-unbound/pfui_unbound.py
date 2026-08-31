@@ -115,8 +115,11 @@ def logger(qstate):
 
 def read_rr(rep=None, qname_str="", from_cache=False):
     """PFUI: Inspects RR response data, extracts IPs and TTLs, and returns PFUI Firewall data structure.
-    Data Structure: {'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl }], 'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl }],
-                     'kind': 'rr'|'cache'}
+    Data Structure: {'kind': 'rr'|'cache', 'qname': qname_str,
+                     'AF4': [{"ip": ipv4_addr, "ttl": ip4_ttl}],
+                     'AF6': [{"ip": ipv6_addr, "ttl": ip6_ttl}]}
+    qname is per message, not per record: every record in one reply shares the
+    query name, so repeating it once per address was pure duplication.
     On the cache path Unbound reports rr_ttl as an absolute expiry timestamp, on
     the reply path as a relative TTL. 'kind' records which, so the firewall does
     not have to guess from the magnitude.
@@ -144,9 +147,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
                         ipv4_addr = inet_ntop(
                             AF_INET, rr_ip4
                         )  # IP bytes to display format
-                        ipv4_resps.append(
-                            {"ip": ipv4_addr, "ttl": int(rr_ttl4), "qname": qname_str}
-                        )
+                        ipv4_resps.append({"ip": ipv4_addr, "ttl": int(rr_ttl4)})
                         if pfui_cfg["LOGGING"]:
                             log_info(
                                 f"PFUIDNS: {qname_str} Found IPv4 address {ipv4_addr}"
@@ -167,9 +168,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
                         ipv6_addr = inet_ntop(
                             AF_INET6, rr_ip6
                         )  # IP6 bytes to display format
-                        ipv6_resps.append(
-                            {"ip": ipv6_addr, "ttl": int(rr_ttl6), "qname": qname_str}
-                        )
+                        ipv6_resps.append({"ip": ipv6_addr, "ttl": int(rr_ttl6)})
                         if pfui_cfg["LOGGING"]:
                             log_info(
                                 f"PFUIDNS: {qname_str} Found IPv6 address {ipv6_addr}"
@@ -181,9 +180,10 @@ def read_rr(rep=None, qname_str="", from_cache=False):
 
     if ipv4_resps or ipv6_resps:
         return {
+            "kind": "cache" if from_cache else "rr",
+            "qname": qname_str,
             "AF4": ipv4_resps,
             "AF6": ipv6_resps,
-            "kind": "cache" if from_cache else "rr",
         }
     else:
         return False

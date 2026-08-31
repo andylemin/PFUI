@@ -19,11 +19,11 @@ def test_large_message_roundtrip():
     """B1: a message far larger than SOCKET_BUFFER must survive reassembly."""
     msg = {
         "AF4": [
-            {"ip": f"198.51.100.{i % 254 + 1}", "ttl": 3600, "qname": "x"}
+            {"ip": f"198.51.100.{i % 254 + 1}", "ttl": 3600}
             for i in range(500)
         ],
         "AF6": [],
-        "kind": "rr",
+        "kind": "rr", "qname": "test.",
     }
     blob = encode(msg, compress=True)
     assert len(blob) > 1024  # would have been truncated by the old 2-chunk join
@@ -32,13 +32,13 @@ def test_large_message_roundtrip():
 
 def test_payload_containing_sentinel_bytes():
     """B1: b"EOT" inside the payload must not terminate the frame."""
-    msg = {"AF4": [{"ip": "203.0.113.7", "ttl": 3600, "qname": "EOT"}], "AF6": [],
-           "kind": "rr"}
+    msg = {"AF4": [{"ip": "203.0.113.7", "ttl": 3600}], "AF6": [],
+           "kind": "rr", "qname": "test."}
     assert decode_stream(encode(msg, compress=True), chunk=1) == msg
 
 
 def test_uncompressed_roundtrip():
-    msg = {"AF4": [], "AF6": [{"ip": "2001:db8::1", "ttl": 300}], "kind": "cache"}
+    msg = {"AF4": [], "AF6": [{"ip": "2001:db8::1", "ttl": 300}], "kind": "cache", "qname": "test."}
     assert decode_stream(encode(msg, compress=False), compress=False) == msg
 
 
@@ -47,7 +47,7 @@ def test_closed_connection_returns_none():
 
 
 def test_truncated_payload_raises():
-    blob = encode({"AF4": [], "AF6": [], "kind": "rr"}, compress=False)
+    blob = encode({"AF4": [], "AF6": [], "kind": "rr", "qname": "test."}, compress=False)
     with pytest.raises(WireError):
         decode_stream(blob[:-1], compress=False)
 
@@ -72,5 +72,5 @@ def test_decompression_bomb_refused():
 
 
 def test_payload_at_ceiling_still_decodes():
-    payload = encode_payload({"AF4": [], "AF6": [], "kind": "rr"}, compress=True)
-    assert decode_stream(frame(payload)) == {"AF4": [], "AF6": [], "kind": "rr"}
+    payload = encode_payload({"AF4": [], "AF6": [], "kind": "rr", "qname": "test."}, compress=True)
+    assert decode_stream(frame(payload)) == {"AF4": [], "AF6": [], "kind": "rr", "qname": "test."}

@@ -141,9 +141,9 @@ def test_read_rr_labels_the_source(plugin):
     from_cache = plugin.read_rr(FakeRep(), "example.com.", from_cache=True)
     assert from_reply["kind"] == "rr"
     assert from_cache["kind"] == "cache"
-    assert from_reply["AF4"] == [
-        {"ip": "8.8.8.8", "ttl": 3600, "qname": "example.com."}
-    ]
+    assert from_reply["AF4"] == [{"ip": "8.8.8.8", "ttl": 3600}]
+    # qname appears once for the whole message, not once per address
+    assert from_reply["qname"] == "example.com."
 
 
 def test_operate_finishes_on_moddone_without_a_reply(plugin):
