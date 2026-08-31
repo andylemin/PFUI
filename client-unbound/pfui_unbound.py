@@ -293,10 +293,9 @@ def tcp_transmit_close(data, ip, port, blocking):
     conn.setsockopt(
         SOL_SOCKET, SO_REUSEADDR, True
     )  # Fast Socket reuse
-    conn.setsockopt(
-        SOL_SOCKET, SO_SNDBUF, 0
-    )  # Zero size Buffer (Zero buff, Send immediately?)
-    # s.setsockopt(SOL_SOCKET, SO_SNDBUF, getsizeof(data))  # Exact send buff
+    # No SO_SNDBUF here: setting it to 0 does not mean "send immediately", the
+    # kernel clamps it to its minimum, and a small send buffer only adds syscalls
+    # and blocking on large messages. TCP_NODELAY above is the latency control.
 
     sent = False
     try:
@@ -357,8 +356,11 @@ def transmit_all(pfui_dict, blocking=True):
             # JSON, optionally lz4 compressed. TCP adds a length prefix below
             pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
 
-            # Firewalls are updated serially; the circuit breaker keeps an
-            # unreachable one from adding its timeout to every query
+            # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
+            # Serial today: with BLOCKING each firewall's full round trip is added
+            # to the query. The circuit breaker keeps an unreachable one from
+            # contributing its timeout, but a healthy CARP pair still doubles the
+            # block time.
 
             if pfui_cfg["SOCKET_PROTO"] == "UDP":
                 udp_transmit_close(

@@ -39,7 +39,7 @@ from redis import StrictRedis
 from service import Service, find_syslog
 from yaml import safe_load
 
-from socket import AF_INET, AF_INET6, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET, SO_SNDBUF
+from socket import AF_INET, AF_INET6, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET
 from socket import SOCK_STREAM, IPPROTO_TCP, TCP_NODELAY, AddressFamily
 from socket import error as socket_error, timeout as socket_timeout
 from socket import socket
@@ -408,7 +408,7 @@ class PFUI_Firewall(Service):
             if "SOCKET_BUFFER" not in self.cfg:
                 self.cfg["SOCKET_BUFFER"] = 1024
             if "SOCKET_BACKLOG" not in self.cfg:
-                self.cfg["SOCKET_BACKLOG"] = 5
+                self.cfg["SOCKET_BACKLOG"] = 128
             if "COMPRESS" not in self.cfg:
                 self.cfg["COMPRESS"] = True
             if "MAX_WORKERS" not in self.cfg:
@@ -538,9 +538,6 @@ class PFUI_Firewall(Service):
             self.conn.setsockopt(
                 SOL_SOCKET, SO_REUSEADDR, True
             )  # Fast Listen Socket reuse
-            self.conn.setsockopt(
-                SOL_SOCKET, SO_SNDBUF, 0
-            )  # Zero-size send Buffer (Send immediately)
             self.conn.settimeout(
                 self.cfg["SOCKET_TIMEOUT"]
             )  # accept() connection timeout to check TERM
@@ -551,6 +548,7 @@ class PFUI_Firewall(Service):
                 try:
                     # Hand each accepted connection to the pool
                     conn, (ip, port) = self.conn.accept()  # Waits self.conn.settimeout
+                    self._prepare_conn(conn)
                     if not self.slots.acquire(blocking=False):
                         # Shed rather than queue: PF still denies the traffic, and
                         # PFUI_Unbound sees a socket failure instead of a stall
@@ -585,7 +583,6 @@ class PFUI_Firewall(Service):
             # setup listen socket
             self.soc = socket(AF_INET, SOCK_DGRAM)  # UDP Datagram Socket
             self.soc.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
-            self.soc.setsockopt(SOL_SOCKET, SO_SNDBUF, 36)  # 'ACK' = 36bytes
             self.soc.settimeout(
                 self.cfg["SOCKET_TIMEOUT"]
             )  # recvfrom() data timeout to check TERM
@@ -645,6 +642,22 @@ class PFUI_Firewall(Service):
         self.db.close()
         self.logger.info("PFUIFW: [-] PFUI_Firewall Service Stopped.")
 
+    def _prepare_conn(self, conn):
+        """Apply per-connection options to a freshly accepted socket.
+
+        accept() does not carry over the listener's settings: Python returns the
+        new socket in blocking mode with no timeout, so without this a peer that
+        connects and stalls occupies a worker slot permanently. TCP_NODELAY is
+        set here too rather than relying on inheritance from the listener, which
+        is not guaranteed across platforms.
+        """
+        conn.settimeout(float(self.cfg["SOCKET_TIMEOUT"]))
+        try:
+            conn.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)
+        except Exception:  # Not fatal; costs latency, not correctness
+            self.logger.exception("PFUIFW: Could not set TCP_NODELAY on connection")
+        return conn
+
     def _submit(self, **kwargs):
         """Run receiver_thread in the pool, releasing its slot when it finishes."""
         future = self.pool.submit(self.receiver_thread, **kwargs)
@@ -663,7 +676,9 @@ class PFUI_Firewall(Service):
         Data Structure:
         {'kind': 'rr'|'cache', 'qname': qname, 'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl}], 'AF6': [...]}
         For performance, we want entire message sent in a single segment, with small socket buffers (no delay).
-        Ensure SOCKET_BUFFER is small, but large enough for maximum expected record size.
+        SOCKET_BUFFER is the read chunk size, not a message limit; message size is
+        bounded by the protocol's MAX_MESSAGE. Raising it costs memory per
+        connection and saves syscalls on large answers.
         """
 
         def disconnect(proto, soc, conn, msg):

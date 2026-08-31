@@ -10,8 +10,10 @@ LOG_LEVEL: DEBUG              # 'DEBUG', 'INFO' (testing), 'ERROR' (production)
 SOCKET_LISTEN: 10.10.1.254    # Interface(s) to listen on (SET TO INSIDE INTERFACE IP)
 SOCKET_PORT: 10001            # Port to listen on (Permit inbound access to this port from PFUI_Unbound instances)
 SOCKET_TIMEOUT: 3             # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall (keep small)
-SOCKET_BUFFER: 1024           # Maximum message length. (~38 Bytes for each A, and ~46 Bytes for each AAAA record)
-SOCKET_BACKLOG: 5             # How many network connections can be queued up waiting to be accepted
+SOCKET_BUFFER: 1024           # Read chunk size, not a message limit (the protocol caps a message at 1 MiB).
+                              # Larger values mean fewer syscalls on big answers, at more memory per connection
+SOCKET_BACKLOG: 128           # Accept queue depth. Small values drop SYNs under burst, and the resolver
+                              # then waits seconds for a SYN retransmit on the DNS critical path
 COMPRESS: True                # Compress and Decompress PFUI_Unbound->PFUI_Firewall data
 MAX_WORKERS: 32               # Receiver thread pool size. Twice this many connections may be in flight before shedding
 ALLOW_INSECURE_UDP: False     # UDP mode is spoofable (lab use only). SOCKET_PROTO: UDP refuses to start unless True
