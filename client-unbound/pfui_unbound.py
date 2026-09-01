@@ -36,6 +36,7 @@ from pfui_wire import encode_payload, frame  # noqa: E402
 from socket import (
     AF_INET,
     AF_INET6,
+    AF_UNIX,
     IPPROTO_TCP,
     SO_SNDBUF,
     SOCK_DGRAM,
@@ -106,10 +107,14 @@ def logger(qstate):
                     log_info("rrsig")
                 log_info("")
                 log_info(f"HEX:  {data_to_hex(str(d.rr_data[j]))}")
-                if rk.type_str == "A":
-                    log_info(f"IPv4: {inet_ntop(AF_INET, d.rr_data[j][-4:])}")
-                if rk.type_str == "AAAA":
-                    log_info(f"IPv6: {inet_ntop(AF_INET6, d.rr_data[j][-16:])}")
+                # Only the first d.count records hold addresses; the rest are
+                # signatures. Reading their trailing bytes as an address printed
+                # a fabricated one, the same defect read_rr was fixed for
+                if j < d.count:
+                    if rk.type_str == "A":
+                        log_info(f"IPv4: {inet_ntop(AF_INET, d.rr_data[j][-4:])}")
+                    if rk.type_str == "AAAA":
+                        log_info(f"IPv6: {inet_ntop(AF_INET6, d.rr_data[j][-16:])}")
     log_info("-" * 100)
 
 
@@ -238,7 +243,7 @@ def udp_transmit_close(data, ip, port, blocking):
 
     # transmit pf firewall data
     reply = udp_transmit(soc, data, ip, port, int(pfui_cfg["UDP_RETRY"]))
-    breaker_record(ip, port, ok=(reply == b"ACKDATA"))
+    breaker_record(f"{ip}:{port}", ok=(reply == b"ACKDATA"))
 
     # wait for pf firewall update
     if blocking:  # Wait for secondary ACKUPDATE
@@ -254,14 +259,25 @@ def udp_transmit_close(data, ip, port, blocking):
     soc.close()
 
 
-# Per-firewall circuit breaker state: {(ip, port): [consecutive_failures, open_until]}
+# Per-firewall circuit breaker state: {target: [consecutive_failures, open_until]}
+# Keyed on the target's label rather than an (ip, port) pair, so a local socket
+# path is as much a distinct destination as an address and port are
 _breakers = {}
 
 
-def breaker_open(ip, port):
-    """True while this firewall is in its cool-off window."""
-    state = _breakers.get((ip, port))
+def breaker_open(target):
+    """True while this firewall is in its cool-off window.
+
+    A closed breaker keeps its failure count. Clearing it on every check, which is
+    what this did, reset the count once per query and so held it at 1 forever: with
+    any BREAKER_FAILURES above 1 the breaker could never trip, and every query kept
+    paying the full timeout for a firewall that was plainly down. Only an elapsed
+    cool-off clears the count, which is the one case that means "probe again".
+    """
+    state = _breakers.get(target)
     if not state:
+        return False
+    if not state[1]:  # Closed and counting failures
         return False
     if state[1] > time():
         return True
@@ -269,9 +285,9 @@ def breaker_open(ip, port):
     return False
 
 
-def breaker_record(ip, port, ok):
+def breaker_record(target, ok):
     """Count consecutive failures and open the breaker once the threshold trips."""
-    state = _breakers.setdefault((ip, port), [0, 0])
+    state = _breakers.setdefault(target, [0, 0])
     if ok:
         state[0], state[1] = 0, 0
         return
@@ -279,61 +295,132 @@ def breaker_record(ip, port, ok):
     if state[0] >= int(pfui_cfg["BREAKER_FAILURES"]):
         state[1] = time() + float(pfui_cfg["BREAKER_COOLOFF"])
         log_err(
-            f"PFUIDNS: {ip}:{port} unreachable {state[0]}x, skipping it for "
+            f"PFUIDNS: {target} unreachable {state[0]}x, skipping it for "
             f"{pfui_cfg['BREAKER_COOLOFF']}s (PF still denies the traffic)"
         )
 
 
-def tcp_transmit_close(data, ip, port, blocking):
-    conn = socket(AF_INET, SOCK_STREAM)
+def stream_transmit_close(data, family, address, target, blocking):
+    """Send one framed message over a stream socket and wait for the ACK.
+
+    Shared by the TCP and the local-socket paths: both carry the same
+    length-prefixed frame and get the same reply, so only the socket family, the
+    address and the latency controls differ.
+    """
+    conn = socket(family, SOCK_STREAM)
     conn.settimeout(pfui_cfg["SOCKET_TIMEOUT"])
-    conn.setsockopt(
-        IPPROTO_TCP, TCP_NODELAY, True
-    )  # Disable Nagle
-    conn.setsockopt(
-        SOL_SOCKET, SO_REUSEADDR, True
-    )  # Fast Socket reuse
-    # No SO_SNDBUF here: setting it to 0 does not mean "send immediately", the
-    # kernel clamps it to its minimum, and a small send buffer only adds syscalls
-    # and blocking on large messages. TCP_NODELAY above is the latency control.
+    if family == AF_INET:
+        conn.setsockopt(
+            IPPROTO_TCP, TCP_NODELAY, True
+        )  # Disable Nagle
+        conn.setsockopt(
+            SOL_SOCKET, SO_REUSEADDR, True
+        )  # Fast Socket reuse
+        # No SO_SNDBUF here: setting it to 0 does not mean "send immediately", the
+        # kernel clamps it to its minimum, and a small send buffer only adds syscalls
+        # and blocking on large messages. TCP_NODELAY above is the latency control.
+    # A local socket needs neither: there is no Nagle to disable and no
+    # TIME_WAIT to reuse, which is most of why it is faster than loopback TCP.
 
     sent = False
     try:
-        conn.connect((ip, port))
+        conn.connect(address)
         conn.sendall(frame(data))
         sent = True
-        breaker_record(ip, port, ok=True)
     except TIMEOUT:
-        breaker_record(ip, port, ok=False)
+        breaker_record(target, ok=False)
         log_err(
-            "PFUIDNS: TCP Socket Timeout to firewall! Check pfui_firewall is running."
+            f"PFUIDNS: Socket Timeout to firewall {target}! Check pfui_firewall is running."
         )
-    except ERROR:
-        breaker_record(ip, port, ok=False)
+    except ERROR as e:
+        breaker_record(target, ok=False)
         log_err(
-            "PFUIDNS: TCP Socket Error! Check pfui_firewall is running."
+            f"PFUIDNS: Socket Error to firewall {target} ({e})! Check pfui_firewall "
+            f"is running, and that this user may write the socket if it is local."
         )
     except Exception as e:
-        breaker_record(ip, port, ok=False)
-        log_err(f"PFUIDNS: Unknown TCP Socket Exception! {e}")
+        breaker_record(target, ok=False)
+        log_err(f"PFUIDNS: Unknown Socket Exception to {target}! {e}")
 
+    # The breaker counts a successful acknowledgement, not a successful send. A
+    # firewall that completes the handshake and then never replies looked healthy
+    # to the old accounting, so the breaker never opened and every subsequent
+    # query paid SOCKET_TIMEOUT in full, forever. A refusal counts as a failure
+    # too: the firewall is reachable but is not whitelisting anything, and PF
+    # keeps denying the traffic either way.
     try:
         if blocking and sent:  # Nothing to acknowledge if the send failed
             reply = conn.recv(36)  # Wait for pfui_firewall to ACK
+            breaker_record(target, ok=(reply == b"ACKUPDATE"))
             if reply != b"ACKUPDATE":
                 # The firewall replies with a reason when it refuses a message,
                 # e.g. a version skew that leaves the wire format mismatched
                 log_err(
-                    f"PFUIDNS: {ip}:{port} did not confirm the update: {reply!r}"
+                    f"PFUIDNS: {target} did not confirm the update: {reply!r}"
                 )
+        elif sent:
+            # Non-blocking: delivery is the only thing observable from here
+            breaker_record(target, ok=True)
     except TIMEOUT:
+        breaker_record(target, ok=False)
         log_err(
-            "PFUIDNS: Timeout waiting for pfui_firewall ACK."
+            f"PFUIDNS: Timeout waiting for pfui_firewall ACK from {target}."
         )
     except Exception as e:
-        log_err(f"PFUIDNS: Unknown TCP Socket Exception while reading! {e}")
+        breaker_record(target, ok=False)
+        log_err(f"PFUIDNS: Unknown Socket Exception while reading {target}! {e}")
     finally:
         conn.close()
+
+
+def tcp_transmit_close(data, ip, port, blocking):
+    stream_transmit_close(
+        data=data,
+        family=AF_INET,
+        address=(ip, int(port)),
+        target=f"{ip}:{port}",
+        blocking=blocking,
+    )
+
+
+def unix_transmit_close(data, path, blocking):
+    """Send to a PFUI_Firewall on this same host over its local socket.
+
+    There is no PF rule guarding this transport, because there is no packet: the
+    permissions on the socket are the whole access control, so a connect() that
+    fails with EACCES means this resolver's user is not in the firewall's
+    SOCKET_UNIX_GROUP.
+    """
+    stream_transmit_close(
+        data=data,
+        family=AF_UNIX,
+        address=path,
+        target=path,
+        blocking=blocking,
+    )
+
+
+def firewall_target(fw):
+    """How to reach one FIREWALLS entry, or None if it names no firewall.
+
+    Returns (kind, target, address). 'target' is the label the circuit breaker and
+    the logs key on, so it must identify one destination uniquely.
+
+    An entry carries either SOCKET, for a PFUI_Firewall on this same host, or
+    HOST, for one reached over the network with SOCKET_PROTO. Per entry rather
+    than per resolver, because a CARP node runs both at once: the local firewall
+    over its socket, and the peer over TCP.
+    """
+    path = fw.get("SOCKET")
+    if path:
+        return "UNIX", str(path), str(path)
+    host = fw.get("HOST")
+    if not host:
+        return None
+    # 'or' rather than a get() default: a 'PORT:' left empty in the yml parses as
+    # None, which is not the same as absent
+    port = int(fw.get("PORT") or pfui_cfg["DEFAULT_PORT"])
+    return pfui_cfg["SOCKET_PROTO"], f"{host}:{port}", (host, port)
 
 
 def transmit_all(pfui_dict, blocking=True):
@@ -342,39 +429,57 @@ def transmit_all(pfui_dict, blocking=True):
     if pfui_cfg["LOGGING"]:
         start = time()
 
-    for fw in pfui_cfg["FIREWALLS"]:
-        if fw["HOST"]:
-            port = fw.get("PORT", pfui_cfg["DEFAULT_PORT"])  # Do not mutate pfui_cfg
-            if breaker_open(fw["HOST"], port):
-                log_info(
-                    f"PFUIDNS: Skipping {fw['HOST']}:{port}, circuit breaker open"
-                )
-                continue
-            if pfui_cfg["LOGGING"]:
-                log_info(f"PFUIDNS: Sending '{pfui_dict}' to {fw['HOST']}:{port}")
+    # Encoded once for all firewalls, and only if there is one to send to: the
+    # bytes are identical per destination, and this runs on the blocking DNS path
+    # where a second lz4 pass per firewall was pure duplicated work
+    pfui_data = None
 
-            # JSON, optionally lz4 compressed. TCP adds a length prefix below
+    for fw in pfui_cfg["FIREWALLS"]:
+        destination = firewall_target(fw)
+        if destination is None:
+            continue
+        kind, target, address = destination
+
+        if breaker_open(target):
+            log_info(f"PFUIDNS: Skipping {target}, circuit breaker open")
+            continue
+        if pfui_cfg["LOGGING"]:
+            log_info(f"PFUIDNS: Sending '{pfui_dict}' to {target}")
+
+        # JSON, optionally lz4 compressed. Both stream transports add a length
+        # prefix below; only UDP sends the payload alone
+        if pfui_data is None:
             pfui_data = encode_payload(pfui_dict, compress=pfui_cfg["COMPRESS"])
 
-            # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
-            # Serial today: with BLOCKING each firewall's full round trip is added
-            # to the query. The circuit breaker keeps an unreachable one from
-            # contributing its timeout, but a healthy CARP pair still doubles the
-            # block time.
+        # TODO Update Multiple Firewalls in parallel (test Thread setup performance vs serial send)
+        # Serial today: with BLOCKING each firewall's full round trip is added
+        # to the query. The circuit breaker keeps an unreachable one from
+        # contributing its timeout, but a healthy CARP pair still doubles the
+        # block time.
 
-            if pfui_cfg["SOCKET_PROTO"] == "UDP":
-                udp_transmit_close(
+        if kind == "UNIX":
+            unix_transmit_close(data=pfui_data, path=address, blocking=blocking)
+        elif kind == "UDP":
+            udp_transmit_close(
                 data=pfui_data,
-                ip=fw["HOST"],
-                port=port,
-                blocking=blocking
+                ip=address[0],
+                port=address[1],
+                blocking=blocking,
             )
-            elif pfui_cfg["SOCKET_PROTO"] == "TCP":
-                tcp_transmit_close(
+        elif kind == "TCP":
+            tcp_transmit_close(
                 data=pfui_data,
-                ip=fw["HOST"],
-                port=port,
-                blocking=blocking
+                ip=address[0],
+                port=address[1],
+                blocking=blocking,
+            )
+        else:
+            # Unreachable: the config load validates this. Kept so a proto
+            # that reaches here is loud, rather than silently whitelisting
+            # nothing while the resolver looks perfectly healthy
+            log_err(
+                f"PFUIDNS: SOCKET_PROTO '{pfui_cfg['SOCKET_PROTO']}' is not TCP "
+                f"or UDP; {target} was not told about {pfui_dict}"
             )
 
     if pfui_cfg["LOGGING"]:
@@ -516,26 +621,83 @@ def operate(id, event, qstate, qdata):
     return True
 
 
+# Every key this module reads, with the value assumed when the yml omits it.
+# Partial defaults meant a config predating an option raised KeyError from inside
+# a query - after Unbound had already loaded the module and before ext_state was
+# set - so the resolver failed per lookup rather than at start.
+CONFIG_DEFAULTS = {
+    "LOGGING": True,
+    "LOG_LEVEL": "ERROR",
+    "COMPRESS": True,
+    "SOCKET_PROTO": "TCP",
+    "SOCKET_TIMEOUT": 3,
+    "BLOCKING": True,
+    "UDP_RETRY": 3,
+    "UDP_ACK_TIMEOUT": 0.5,
+    "BREAKER_FAILURES": 3,
+    "BREAKER_COOLOFF": 30,
+    "DEFAULT_PORT": 10001,
+    "FIREWALLS": [],  # Nothing to send to; warned about below rather than guessed
+}
+
+
+def load_config(location=CONFIG_LOCATION):
+    """Read the yml, apply the defaults, and reject a config that cannot work.
+
+    Raises ValueError on a SOCKET_PROTO the transmit path does not implement,
+    which would otherwise leave the resolver answering normally while telling no
+    firewall anything.
+    """
+    cfg = safe_load(open(location)) or {}
+    for key, value in CONFIG_DEFAULTS.items():
+        cfg.setdefault(key, value)
+    cfg["SOCKET_PROTO"] = str(cfg["SOCKET_PROTO"]).strip().upper()
+    if cfg["SOCKET_PROTO"] not in ("TCP", "UDP"):
+        raise ValueError(
+            f"SOCKET_PROTO must be TCP or UDP, not '{cfg['SOCKET_PROTO']}'"
+        )
+
+    # SOCKET_PROTO governs the network entries only. A SOCKET entry is always a
+    # local stream socket carrying the same frames, so UDP does not apply to it.
+    for index, fw in enumerate(cfg["FIREWALLS"] or []):
+        if not isinstance(fw, dict):
+            raise ValueError(f"FIREWALLS[{index}] is not a mapping: {fw!r}")
+        socket_path, host = fw.get("SOCKET"), fw.get("HOST")
+        if socket_path and host:
+            raise ValueError(
+                f"FIREWALLS[{index}] sets both SOCKET ({socket_path}) and HOST "
+                f"({host}); one firewall is reached one way or the other"
+            )
+        if socket_path and not str(socket_path).startswith("/"):
+            raise ValueError(
+                f"FIREWALLS[{index}] SOCKET must be an absolute path, "
+                f"not '{socket_path}'"
+            )
+        # An entry with neither is skipped by firewall_target rather than
+        # rejected: a commented-out placeholder left with an empty HOST has
+        # always been tolerated, and refusing to load would break configs that
+        # work today. It is worth saying out loud, though
+        if not socket_path and not host:
+            log_err(
+                f"PFUIDNS: FIREWALLS[{index}] names neither SOCKET nor HOST "
+                f"({fw}); it will be skipped"
+            )
+    return cfg
+
+
 if __name__ == "__main__":
     try:
-        pfui_cfg = safe_load(open(CONFIG_LOCATION))
-        if "SOCKET_PROTO" not in pfui_cfg:
-            pfui_cfg["SOCKET_PROTO"] = "TCP"
-        if "BLOCKING" not in pfui_cfg:
-            pfui_cfg["BLOCKING"] = True
-        if "UDP_RETRY" not in pfui_cfg:
-            pfui_cfg["UDP_RETRY"] = 3
-        if "UDP_ACK_TIMEOUT" not in pfui_cfg:
-            pfui_cfg["UDP_ACK_TIMEOUT"] = 0.5
-        if "BREAKER_FAILURES" not in pfui_cfg:
-            pfui_cfg["BREAKER_FAILURES"] = 3
-        if "BREAKER_COOLOFF" not in pfui_cfg:
-            pfui_cfg["BREAKER_COOLOFF"] = 30
-
+        pfui_cfg = load_config()
     except Exception as e:
         log_err(
             f"PFUIDNS: Yaml Config File (pfui_unbound.yml) not found or cannot load: {e}"
         )
         exit(1)
+
+    if not pfui_cfg["FIREWALLS"]:
+        log_err(
+            "PFUIDNS: No FIREWALLS configured; resolved addresses will not be "
+            f"whitelisted anywhere. Add them to {CONFIG_LOCATION}"
+        )
 
     log_info("PFUIDNS: python module for Unbound loaded.")

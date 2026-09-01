@@ -46,6 +46,19 @@ OpenBSD PF Firewall(s); Configure PFUI_Firewall `/etc/pfui_firewall.yml`
 Unbound DNS Resolver(s); Configure PFUI_Unbound `/var/unbound/etc/pfui_unbound.yml`
 ```
 
+### Transports
+The firewall needs at least one listener, and may run both:
+
+| Config | Serves |
+|--------|--------|
+| `SOCKET_LISTEN` + `SOCKET_PROTO` | Resolvers on other hosts. Restrict the port in `pf.conf` to the known resolvers. |
+| `SOCKET_UNIX` | A resolver on **this** host. No `pf.conf` rule; group `_pfui` and the socket's `0660` mode are the access control. |
+
+`SOCKET_LISTEN` is never defaulted to `0.0.0.0` — leaving it out is how a
+same-host deployment says "local socket only". On the resolver, each `FIREWALLS`
+entry picks its own transport with `HOST:` or `SOCKET:`. See
+[Same-host deployment](README.md#samehost).
+
 Warning; UDP mode (`SOCKET_PROTO: UDP`) is _not_ recommended (experimental) as Unbound's Python Module executes every DNS lookup, 
 using a unique network socket to PFUI_Firewall for each lookup. With UDP's default timers, the socket 
 remains (5mins) after the connection/PFUI_Firewall is updated, thus blocking subsequent connections until timeout.
@@ -83,10 +96,25 @@ pkg_add -i swig git bash cmake libconfig libiconv bison gawk mawk
 python3 -m pip install -r ./client-unbound/requirements.txt
 
 ### PFUI_Unbound - Download Unbound source
+Clone the release you mean to build, rather than the default branch. `--branch`
+accepts a tag, so a single-commit clone lands directly on it; cloning shallowly
+and then checking out another ref does not work, because `--depth` implies
+`--single-branch`.
 ```
-git clone --depth 20 https://github.com/NLnetLabs/unbound.git /tmp/unbound
-# --depth 20 helps with shallow clone errors
+# The tag the installer would resolve, newest release first
+git ls-remote --tags --refs https://github.com/NLnetLabs/unbound.git 'release-*' \
+  | sed 's#.*refs/tags/##' | grep -E '^release-[0-9.]+$' | sort -t. -k2,2n -k3,3n | tail -1
+
+git clone --depth 1 --branch release-1.26.0 https://github.com/NLnetLabs/unbound.git /tmp/unbound
 ```
+`client-unbound/tools/unbound_release.sh` does this resolution for the installer,
+and prints the ref it picked:
+```
+./client-unbound/tools/unbound_release.sh          # latest release tag
+./client-unbound/tools/unbound_release.sh master   # passes through unchanged
+```
+Note that `release-*` tags are permanent but the `branch-*` heads are not: NLnet
+Labs prunes them, and nothing before 1.23 still exists.
 
 #### Default Unbound build options in OpenBSD port, `unbound -V` (ref only);
 ```

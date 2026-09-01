@@ -14,7 +14,17 @@ pexp="/usr/local/bin/python3 ${daemon}.*"
 rc_pre() {
 	# /var/run is root-owned, and OpenBSD's MAKEDEV resets /dev/pf's mode on
 	# release upgrades, so both are re-established on every start
-	install -d -o _pfui_firewall -g _pfui_firewall -m 755 /var/run/pfui
+	#
+	# Group _pfui when it exists: the local socket is created in this directory
+	# and, with BSD group inheritance, takes the directory's group. 0750 also
+	# means only that group can traverse to reach the socket at all, so the
+	# directory is a second gate in front of the socket's own 0660. Falls back to
+	# the old ownership so an install predating the _pfui group still starts.
+	if groupinfo _pfui >/dev/null 2>&1; then
+		install -d -o _pfui_firewall -g _pfui -m 750 /var/run/pfui
+	else
+		install -d -o _pfui_firewall -g _pfui_firewall -m 755 /var/run/pfui
+	fi
 	chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf
 }
 

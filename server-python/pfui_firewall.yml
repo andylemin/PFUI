@@ -7,7 +7,23 @@ LOGGING: False                # Enable verbose logging ('True'/'False')
 LOG_LEVEL: DEBUG              # 'DEBUG', 'INFO' (testing), 'ERROR' (production)
 
 # Networking
-SOCKET_LISTEN: 10.10.1.254    # Interface(s) to listen on (SET TO INSIDE INTERFACE IP)
+# At least one listener must be configured, SOCKET_LISTEN or SOCKET_UNIX. Both may
+# be, and a CARP node normally wants both: its own resolver over the local socket,
+# its peer's resolver over the network.
+SOCKET_LISTEN: 10.10.1.254    # Interface to listen on for remote resolvers (SET TO INSIDE INTERFACE IP).
+                              # Never defaulted to 0.0.0.0: this port injects PF whitelist entries and is
+                              # unauthenticated. Omit it entirely for a local-socket-only deployment
+SOCKET_PROTO: TCP             # Network transport, TCP (recommended) or UDP. Anything else refuses to
+                              # start. Does not apply to SOCKET_UNIX, which is always a stream
+
+# Local socket, for a PFUI_Unbound resolver running on THIS host. Faster than
+# loopback TCP (no handshake, no TIME_WAIT, no ephemeral port ceiling) and needs
+# no pf.conf rule, because there is no packet to filter. Empty disables it.
+#SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
+SOCKET_UNIX_GROUP: _pfui      # Group permitted to connect. There is no PF source rule on this transport,
+                              # so this group and the socket's 0660 mode are the whole access control.
+                              # The resolver's account (_unbound) must be a member; both installers
+                              # manage this. Set the socket path above to enable it
 SOCKET_PORT: 10001            # Port to listen on (Permit inbound access to this port from PFUI_Unbound instances)
 SOCKET_TIMEOUT: 3             # Timeout on Socket session between PFUI_Unbound and PFUI_Firewall (keep small)
 SOCKET_BUFFER: 1024           # Read chunk size, not a message limit (the protocol caps a message at 1 MiB).
@@ -23,7 +39,10 @@ REDIS_HOST: 127.0.0.1         # IP for Redis Server
 REDIS_PORT: 6379              # Port for Redis Server
 REDIS_DB: 9                   # Redis Database ID Number (0-15)
 SCAN_PERIOD: 300              # Seconds between PF Table Scans (scrub expired entries from PF, Persist File & Redis)
-TTL_MULTIPLIER: 4             # Expire entries after RR TTL * TTL_MULTIPLIER (Browsers tend to cache longer than TTL)
+TTL_MULTIPLIER: 4             # Expire entries after RR TTL * TTL_MULTIPLIER (Browsers tend to cache longer than TTL).
+                              # This is the only knob for holding entries longer than the record says: the TTL
+                              # itself is stored exactly as the resolver reported it, including the 0 that
+                              # means do-not-cache
 
 # PF Tables & Files
 CTL: IOCTL                    # IOCTL = ioctl kernel interface (recommended, requires DEVPF), PFCTL = pfctl cli interface

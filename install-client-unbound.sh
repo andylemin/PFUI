@@ -4,7 +4,15 @@
 # https://github.com/NLnetLabs/unbound
 #
 
-UNBOUND_BRANCH="branch-1.18.0"  # Stable Unbound branch to use if HEAD is not building without error
+# Exported so unbound_release.sh resolves tags from the same repository this
+# clones from, rather than each holding its own copy of the URL
+export UNBOUND_REPO="https://github.com/NLnetLabs/unbound.git"
+# Which Unbound to build. "latest" asks the upstream repository for its newest
+# release tag at run time; set an explicit tag (Eg, UNBOUND_VERSION=release-1.25.2)
+# to pin, or "master" to build the development head. The resolution and the
+# pinned fallback live in client-unbound/tools/unbound_release.sh, which the
+# container that tests this build uses too.
+UNBOUND_VERSION="${UNBOUND_VERSION:-latest}"
 
 err=0
 trap 'err=1' ERR
@@ -151,17 +159,42 @@ if [[ "$OS" = "OpenBSD" ]]; then
   echo
   read -p "Would you like to build Unbound with Python module support (required) y/n: " yn
   if [[ "$yn" = "y" ]]; then
-    echo "PFUIDNS: Building Unbound with Python Module Support"
-    echo "PFUIDNS: Moving default Unbound source in OpenBSD tree to one side (/usr/src/usr.sbin/unbound.base)"
-    mv /usr/src/usr.sbin/unbound /usr/src/usr.sbin/unbound.base
-    echo "PFUIDNS: Downloading latest Unbound Source into /usr/src/usr.bin"
-    git clone --depth 20 https://github.com/NLnetLabs/unbound.git /usr/src/usr.sbin/unbound
+    RELEASE_HELPER="${DIR}/client-unbound/tools/unbound_release.sh"
+    [ -x "${RELEASE_HELPER}" ] || die "${RELEASE_HELPER} is missing or not executable"
+    echo "PFUIDNS: Resolving which Unbound to build (UNBOUND_VERSION=${UNBOUND_VERSION})"
+    UNBOUND_REF=$("${RELEASE_HELPER}" "${UNBOUND_VERSION}") \
+      || die "cannot resolve which Unbound release to build"
+    echo "PFUIDNS: Building Unbound ${UNBOUND_REF} with Python Module Support"
+
+    # Only move the pristine port aside once: a second run would otherwise
+    # overwrite unbound.base with the previous clone, and Makefile.bsd-wrapper
+    # is the one thing that has to come from base
+    if [ ! -d /usr/src/usr.sbin/unbound.base ]; then
+      echo "PFUIDNS: Moving default Unbound source in OpenBSD tree to one side (/usr/src/usr.sbin/unbound.base)"
+      mv /usr/src/usr.sbin/unbound /usr/src/usr.sbin/unbound.base \
+        || die "cannot move /usr/src/usr.sbin/unbound aside"
+    fi
+    [ -f /usr/src/usr.sbin/unbound.base/Makefile.bsd-wrapper ] \
+      || die "no Makefile.bsd-wrapper in /usr/src/usr.sbin/unbound.base; update the system sources first"
+    rm -rf /usr/src/usr.sbin/unbound
+
+    echo "PFUIDNS: Downloading Unbound ${UNBOUND_REF} into /usr/src/usr.sbin/unbound"
+    # --branch takes a tag, so a single-commit clone lands directly on the wanted
+    # release. The old form cloned the default branch and then tried to check out
+    # another ref, which --depth had already made unavailable
+    git clone --depth 1 --branch "${UNBOUND_REF}" "${UNBOUND_REPO}" \
+      /usr/src/usr.sbin/unbound \
+      || die "cannot clone Unbound ${UNBOUND_REF} (does that tag or branch exist?)"
+
     echo "PFUIDNS: Import OpenBSD make wrapper from base to latest source"
-    cp /usr/src/usr.sbin/unbound.base/Makefile.bsd-wrapper /usr/src/usr.sbin/unbound/Makefile.bsd-wrapper
+    cp /usr/src/usr.sbin/unbound.base/Makefile.bsd-wrapper /usr/src/usr.sbin/unbound/Makefile.bsd-wrapper \
+      || die "cannot import Makefile.bsd-wrapper"
 
     echo "PFUIDNS: Building"
-    cd /usr/src/usr.sbin/unbound || exit
+    cd /usr/src/usr.sbin/unbound || die "cannot cd to the Unbound source"
     # Use same build options as Unbound on OpenBSD, but with pythonmodule enabled
+    # Every step below is checked: an unnoticed configure failure used to be
+    # followed by make and install-all anyway, leaving whatever those produced
     ./configure --enable-allsymbols \
                 --with-ssl=/usr \
                 --with-libevent=/usr \
@@ -174,27 +207,10 @@ if [[ "$OS" = "OpenBSD" ]]; then
                 --with-username=_unbound \
                 --disable-shared \
                 --disable-explicit-port-randomisation \
-                --without-pthreads
-    if [[ $? != 0 ]]; then
-      echo "PFUIDNS: Unbound failed to configure with the current HEAD, trying release branch"
-      git checkout $UNBOUND_BRANCH  # HEAD of Unbound is occasionally unstable
-      make clean
-      ./configure --enable-allsymbols \
-                  --with-ssl=/usr \
-                  --with-libevent=/usr \
-                  --with-libexpat=/usr \
-                  --with-pythonmodule \
-                  --with-chroot-dir=/var/unbound \
-                  --with-pidfile="" \
-                  --with-rootkey-file=/var/unbound/db/root.key \
-                  --with-conf-file=${TARGET}/pfui_unbound.conf \
-                  --with-username=_unbound \
-                  --disable-shared \
-                  --disable-explicit-port-randomisation \
-                  --without-pthreads
-    fi
-    make -f Makefile.bsd-wrapper
-    make install-all
+                --without-pthreads \
+      || die "Unbound ${UNBOUND_REF} failed to configure. Re-run pinned to a known release, Eg 'UNBOUND_VERSION=release-1.25.2 $0 ${TARGET}'"
+    make -f Makefile.bsd-wrapper || die "Unbound ${UNBOUND_REF} failed to build"
+    make install-all || die "Unbound ${UNBOUND_REF} failed to install"
     make clean
   fi
 
@@ -216,6 +232,34 @@ if [[ "$OS" = "OpenBSD" ]]; then
   # Install PFUI_Unbound RC script
   # root-owned: rcctl runs this as root, and a file's owner can always chmod it
   install -m 555 -o root -g wheel "${DIR}"/client-unbound/rc.d/pfui_unbound /etc/rc.d/pfui_unbound
+
+  # Same-host deployment: if PFUI_Firewall is installed here too, the resolver can
+  # reach it over the local socket instead of loopback TCP. Group _pfui is what
+  # permits that, and it only exists once install-server-python.sh has run
+  echo
+  if groupinfo _pfui >/dev/null 2>&1; then
+    echo "PFUIDNS: PFUI_Firewall is installed on this host (group '_pfui' exists)"
+    if groupinfo _pfui | grep -qw _unbound; then
+      echo "PFUIDNS: '_unbound' is already in '_pfui'"
+    else
+      # -G replaces secondary memberships on OpenBSD. _unbound is a base system
+      # account with none by default, but any that exist are preserved here
+      EXISTING=$(id -Gn _unbound 2>/dev/null | tr ' ' '\n' | grep -v '^_unbound$' | paste -sd, -)
+      if [ -n "${EXISTING}" ]; then
+        usermod -G "${EXISTING},_pfui" _unbound || die "cannot add _unbound to _pfui"
+      else
+        usermod -G _pfui _unbound || die "cannot add _unbound to _pfui"
+      fi
+      echo "PFUIDNS: Added '_unbound' to group '_pfui' (permits the local PFUI socket)"
+    fi
+    echo "PFUIDNS: To use it, set SOCKET_UNIX in /etc/pfui_firewall.yml and add"
+    echo "         '- SOCKET: /var/run/pfui/pfui_firewall.sock' to FIREWALLS in"
+    echo "         ${TARGET}/pfui_unbound.yml, then restart both services."
+    echo "PFUIDNS: NB Unbound must be restarted for the new group to take effect."
+  else
+    echo "PFUIDNS: No '_pfui' group, so PFUI_Firewall is not installed on this host;"
+    echo "         the resolver will reach its firewall(s) over the network."
+  fi
 
   echo
   echo "PFUIDNS: Installing Root Hints and example DNS-BL"

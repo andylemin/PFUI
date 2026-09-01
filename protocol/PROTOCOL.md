@@ -11,14 +11,37 @@ field on the wire; see
 
 ## Transport
 
-TCP is the supported transport. UDP exists for lab use and is disabled unless
-the server sets `ALLOW_INSECURE_UDP`, because a datagram source address is not
-verified and the protocol has no authentication.
+| Transport | Use |
+|-----------|-----|
+| TCP | The supported transport between hosts. |
+| Unix domain stream socket | A client and server on the same host. |
+| UDP | Lab use only, and disabled unless the server sets `ALLOW_INSECURE_UDP`, because a datagram source address is not verified and the protocol has no authentication. |
 
-Neither transport is authenticated or encrypted. An IP must reach a PF table
+A server MAY serve more than one transport at once, and `server-python` does: a
+firewall can accept messages from a resolver on the same host over a local socket
+while accepting them from a remote resolver over TCP. Nothing in the message or
+the framing distinguishes them.
+
+The unix socket is a `SOCK_STREAM` socket carrying **exactly the framing and the
+replies TCP does**, so an implementation that speaks TCP needs no message-level
+change to speak it. It is the better choice on one host: there is no handshake,
+no `TIME_WAIT` entry per message, and no ephemeral-port ceiling, all of which
+matter because a client opens one connection per DNS answer (see DECISIONS.md).
+
+No transport is authenticated or encrypted. An IP must reach a PF table
 microseconds before the client connects to it, and a handshake would spend that
-budget. Access control is therefore the packet filter's job: restrict the
-server's listening port to the known resolvers.
+budget. Access control is therefore delegated:
+
+- TCP and UDP: the packet filter's job. Restrict the server's listening port to
+  the known resolvers.
+- Unix socket: the filesystem's job. There is no packet to filter, so the socket's
+  ownership and mode are the whole control. A server MUST NOT create it
+  world-writable, and `server-python` binds it `0660` to a configured group, under
+  a directory only that group may traverse. A client that cannot connect with
+  `EACCES` is not in that group.
+
+Because the two are enforced in different places, a server that serves both is
+only as restricted as the weaker of them.
 
 ## Framing
 
@@ -139,7 +162,13 @@ IPv6 spelling.
 | `ACKDATA` | UDP only. The datagram decoded to a valid message. Sent **after** validation, never on receipt. |
 | (silence) | UDP only. A refused datagram gets no reply at all, since its source address is unverified and a reply would make the server a reflector. |
 | `ACKUPDATE` | The PF tables have been updated. The client may release the DNS answer. |
-| any other | Refusal, with a short human-readable reason (`Missing kind`, `Bad frame`, `Bad length`, `Truncated`, `Failed to decode`, `Invalid datatype`, `Empty payload`, `Socket timeout`). |
+| any other | Refusal, with a short human-readable reason (`Missing kind`, `Bad frame`, `Bad length`, `Truncated`, `Failed to decode`, `Invalid datatype`, `No records`, `Empty payload`, `Socket timeout`). |
+
+`Bad length` and `Truncated` are separate reasons because they are separate
+faults: the first is a prefix a receiver refuses before buffering anything, the
+second is a sender that declared bytes it did not send. `Invalid datatype` is a
+payload that decoded to something other than a message object; `No records` is a
+well-formed message with no routable address left after validation.
 
 A client SHOULD treat anything other than `ACKUPDATE` as a failed update and log
 the reason, which is what a version skew looks like from the client side.

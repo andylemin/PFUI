@@ -36,13 +36,34 @@ jobs:
       - name: Build and run protocol vectors
         run: make -C server-c test
 
+  unbound-container:
+    # The only job that answers "does Unbound still build with the Python module,
+    # and does its pythonmod still call PFUI's entry points". Everything else
+    # tests PFUI against fakes; this builds the Unbound release the installer
+    # resolves and runs PFUI_Unbound inside it, so upstream API drift surfaces
+    # here rather than during someone's install.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 'latest' is what the installer builds by default. 'master' is what it
+        # builds on request, and is informational: upstream head is occasionally
+        # unstable, which is why the installer can be pinned to a release.
+        unbound: [latest, master]
+    continue-on-error: ${{ matrix.unbound == 'master' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Unbound with the Python module and run PFUI_Unbound in it
+        run: ./client-unbound/tests/container/run.sh ${{ matrix.unbound }}
+
   shell:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Syntax-check the installers and ops scripts
         run: |
-          for f in *.sh client-unbound/tools/*.sh; do bash -n "$f"; done
+          for f in *.sh client-unbound/tools/*.sh \
+                   client-unbound/tests/container/*.sh; do bash -n "$f"; done
       - name: Syntax-check the rc.d scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ksh

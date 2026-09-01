@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from pfui_wire import MAX_MESSAGE, WireError, decode_stream, encode
+from pfui_wire import BadLength, MAX_MESSAGE, Truncated, WireError, decode_stream, encode
+
+# The vectors' `expect` column names the rejection, and server-c reports the
+# same distinction as PFUI_BAD_LENGTH / PFUI_TRUNCATED. Asserting the class,
+# rather than only WireError, is what keeps the two implementations honest about
+# which refusal a receiver sends.
+REJECTION = {"length": BadLength, "truncated": Truncated}
 
 VECTORS = Path(__file__).resolve().parents[3] / "protocol" / "vectors"
 
@@ -44,7 +50,8 @@ def test_framing_vector(name, blob, expect, payload_hex):
         # No complete header arrived, so there is no message; not an error
         assert decode_stream(blob, compress=False) is None
     else:
-        with pytest.raises(WireError):
+        expected = REJECTION.get(expect, WireError)
+        with pytest.raises(expected):
             decode_stream(blob, compress=False)
 
 

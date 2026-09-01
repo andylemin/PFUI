@@ -1,0 +1,14 @@
+; Test zone for the PFUI_Unbound container. The addresses are globally routable
+; on purpose: a PFUI server drops anything else, so a private address here would
+; make the test pass while proving nothing about a real deployment.
+$TTL 60
+$ORIGIN pfui-test.
+@       IN  SOA ns.pfui-test. hostmaster.pfui-test. ( 1 3600 900 604800 60 )
+@       IN  NS  ns.pfui-test.
+ns      IN  A   127.0.0.1
+www     IN  A   8.8.8.8
+www     IN  AAAA 2001:4860:4860::8888
+dual    IN  A   1.1.1.1
+dual    IN  AAAA 2606:4700:4700::1111
+many    IN  A   9.9.9.9
+many    IN  A   149.112.112.112
