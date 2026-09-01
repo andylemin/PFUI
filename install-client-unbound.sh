@@ -233,6 +233,34 @@ if [[ "$OS" = "OpenBSD" ]]; then
   # root-owned: rcctl runs this as root, and a file's owner can always chmod it
   install -m 555 -o root -g wheel "${DIR}"/client-unbound/rc.d/pfui_unbound /etc/rc.d/pfui_unbound
 
+  # Same-host deployment: if PFUI_Firewall is installed here too, the resolver can
+  # reach it over the local socket instead of loopback TCP. Group _pfui is what
+  # permits that, and it only exists once install-server-python.sh has run
+  echo
+  if groupinfo _pfui >/dev/null 2>&1; then
+    echo "PFUIDNS: PFUI_Firewall is installed on this host (group '_pfui' exists)"
+    if groupinfo _pfui | grep -qw _unbound; then
+      echo "PFUIDNS: '_unbound' is already in '_pfui'"
+    else
+      # -G replaces secondary memberships on OpenBSD. _unbound is a base system
+      # account with none by default, but any that exist are preserved here
+      EXISTING=$(id -Gn _unbound 2>/dev/null | tr ' ' '\n' | grep -v '^_unbound$' | paste -sd, -)
+      if [ -n "${EXISTING}" ]; then
+        usermod -G "${EXISTING},_pfui" _unbound || die "cannot add _unbound to _pfui"
+      else
+        usermod -G _pfui _unbound || die "cannot add _unbound to _pfui"
+      fi
+      echo "PFUIDNS: Added '_unbound' to group '_pfui' (permits the local PFUI socket)"
+    fi
+    echo "PFUIDNS: To use it, set SOCKET_UNIX in /etc/pfui_firewall.yml and add"
+    echo "         '- SOCKET: /var/run/pfui/pfui_firewall.sock' to FIREWALLS in"
+    echo "         ${TARGET}/pfui_unbound.yml, then restart both services."
+    echo "PFUIDNS: NB Unbound must be restarted for the new group to take effect."
+  else
+    echo "PFUIDNS: No '_pfui' group, so PFUI_Firewall is not installed on this host;"
+    echo "         the resolver will reach its firewall(s) over the network."
+  fi
+
   echo
   echo "PFUIDNS: Installing Root Hints and example DNS-BL"
   [ -f "${TARGET}/update_root_hints.sh" ] && mv "${TARGET}/update_root_hints.sh" "${TARGET}/update_root_hints.sh.${HOUR}"

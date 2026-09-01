@@ -46,6 +46,19 @@ OpenBSD PF Firewall(s); Configure PFUI_Firewall `/etc/pfui_firewall.yml`
 Unbound DNS Resolver(s); Configure PFUI_Unbound `/var/unbound/etc/pfui_unbound.yml`
 ```
 
+### Transports
+The firewall needs at least one listener, and may run both:
+
+| Config | Serves |
+|--------|--------|
+| `SOCKET_LISTEN` + `SOCKET_PROTO` | Resolvers on other hosts. Restrict the port in `pf.conf` to the known resolvers. |
+| `SOCKET_UNIX` | A resolver on **this** host. No `pf.conf` rule; group `_pfui` and the socket's `0660` mode are the access control. |
+
+`SOCKET_LISTEN` is never defaulted to `0.0.0.0` — leaving it out is how a
+same-host deployment says "local socket only". On the resolver, each `FIREWALLS`
+entry picks its own transport with `HOST:` or `SOCKET:`. See
+[Same-host deployment](README.md#samehost).
+
 Warning; UDP mode (`SOCKET_PROTO: UDP`) is _not_ recommended (experimental) as Unbound's Python Module executes every DNS lookup, 
 using a unique network socket to PFUI_Firewall for each lookup. With UDP's default timers, the socket 
 remains (5mins) after the connection/PFUI_Firewall is updated, thus blocking subsequent connections until timeout.

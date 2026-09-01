@@ -28,8 +28,7 @@ authorised egress. It also raised the `ttl` of 0 that means do-not-cache, which
 says, which is the right place for it: the operator sets it knowing why (browsers
 caching past the TTL), rather than inheriting a hidden minimum. The Redis
 `EXPIRE` written alongside each key stays a backstop for the scan loop and is
-floored at one second, because Redis treats `EXPIRE 0` (or negative) as "delete
-now".
+floored at one second, because Redis reads `EXPIRE 0` as "delete now".
 
 ## Unbound is built from a release tag, resolved at install time
 
@@ -67,6 +66,18 @@ against `master`, the reply path reports a relative TTL and the cache path an
 absolute unix timestamp, so `kind` means what `PROTOCOL.md` says it means. That
 was previously an assumption.
 
+Unbound really runs as `_unbound` in the container, and the local socket really is
+`0660 :_pfui` under a `0750` directory, so the container also exercises the group
+model that permits a same-host deployment rather than just the code paths.
+
+Known and benign: on shutdown the resolver logs `pythonmod: Exception occurred in
+function deinit` / `TypeError: 'NoneType' object cannot be interpreted as an
+integer`. It is not PFUI's — it persists with `deinit`'s body reduced to
+`return True`, so nothing PFUI executes can be setting it, and it happens after
+`service stopped`. The container prints any resolver `error:` line even when every
+check passes, which is how this was noticed; it is recorded here so it is not
+re-investigated.
+
 ## UDP has a message-size ceiling
 
 `UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a
@@ -76,14 +87,66 @@ message above the ceiling is logged and dropped rather than truncated silently.
 Accepted because UDP is lab-only and gated behind `ALLOW_INSECURE_UDP`; the fix
 for a real deployment is TCP.
 
-## UDP has a message-size ceiling
+## A local socket for a same-host deployment
 
-`UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a
-buffer that wants raising: a datagram above the link MTU fragments and PF
-commonly drops fragments, so UDP cannot carry the large answers TCP handles. A
-message above the ceiling is logged and dropped rather than truncated silently.
-Accepted because UDP is lab-only and gated behind `ALLOW_INSECURE_UDP`; the fix
-for a real deployment is TCP.
+When PFUI_Unbound runs on the firewall itself, `SOCKET_UNIX` on the server and a
+`SOCKET:` entry on the client replace loopback TCP. That is not a micro-
+optimisation: the client opens one connection per DNS answer (see below), so
+loopback TCP costs a handshake, a `TIME_WAIT` entry on the firewall and a slice of
+the ephemeral port range for every reply. A unix socket has none of those.
+
+Both listeners can run at once, and a CARP node with its own resolver wants
+exactly that: the firewall on this box over the socket, the peer over TCP. That is
+also why the transport is chosen **per `FIREWALLS` entry** on the client rather
+than by one global `SOCKET_PROTO` — one resolver genuinely needs both at the same
+time. `SOCKET_PROTO` now describes only the network entries.
+
+The server binds one accept loop per listener, in a thread each, rather than
+polling them together. Each loop already blocks only for `SOCKET_TIMEOUT` before
+re-checking for `SIGTERM`, and the worker pool, the slot semaphore and the shed
+path are shared and thread-safe, so this leaves each accept path as it was.
+
+### The filesystem is the access control
+
+There is no packet on this transport, so the `pf.conf` source restriction does not
+apply and cannot. The socket's own ownership and mode are the whole control on who
+may inject PF whitelist entries, which is a meaningfully different security model
+from the network listener's, in a different place, enforced by a different
+subsystem. A server serving both is only as restricted as the weaker one.
+
+`_pfui` is a dedicated group holding `_pfui_firewall` and `_unbound`, rather than
+reusing either account's own group. Membership means "may authorise egress", and
+that should not be implied by merely running as the resolver, or be acquired by
+anything later added to `_unbound`'s group for an unrelated reason.
+
+The bind path fails closed throughout, because every one of these leaves the
+socket reachable by more than intended:
+
+- `bind()` creates the node with the process umask, so the umask is narrowed
+  around it rather than the mode being fixed by a `chmod` afterwards. Otherwise
+  the socket is connectable by everyone for the moment in between.
+- A missing `SOCKET_UNIX_GROUP`, or a `chown`/`chmod` that does not take, exits
+  the daemon and unlinks the socket instead of serving on it.
+- A world-writable parent directory is refused unless it is sticky: anyone could
+  otherwise replace the socket and be handed the resolver's messages, whatever
+  mode the socket itself has. The parent is `0750 _pfui_firewall:_pfui`, so it is
+  a second gate in front of the socket.
+- A socket file left by an unclean stop is removed, but only after a probe
+  connect shows nothing is listening. Unlinking a live daemon's socket would
+  leave it running and unreachable.
+
+`SOCKET_UNIX` is length-checked at config load because `sockaddr_un.sun_path` is
+104 bytes on OpenBSD; without it the failure is an `AF_UNIX path too long` from
+`bind()` rather than a named configuration error.
+
+### EPIPE is visible here where TCP hid it
+
+A cache report is sent with `blocking=False`, so the client has closed by the time
+the server writes `ACKUPDATE`. Loopback TCP absorbs that write into a buffer
+nobody reads; a unix socket reports `EPIPE` at once. The tolerance in
+`disconnect()` was already there and is now load-bearing on this transport, and
+there is a test for it. Nothing is lost: the addresses are installed before the
+acknowledgement is attempted.
 
 ## Unauthenticated transport
 

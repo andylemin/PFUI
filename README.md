@@ -258,6 +258,45 @@ few minutes and needs Docker; nothing runs on the host. CI runs it against the
 latest release, and against upstream `master` for information only.
 
 ------
+<a name="samehost"></a>
+### Same-host deployment (local socket);
+
+When PFUI_Unbound and PFUI_Firewall run on the **same machine**, the resolver can
+reach the firewall over a unix domain socket instead of loopback TCP. The client
+opens one connection per DNS answer, so loopback TCP costs a handshake, a
+`TIME_WAIT` entry on the firewall and an ephemeral port for every reply; a local
+socket costs none of them, and needs no `pf.conf` rule because there is no packet
+to filter.
+
+On the firewall, in `/etc/pfui_firewall.yml`:
+```
+SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
+SOCKET_UNIX_GROUP: _pfui
+# SOCKET_LISTEN may be omitted entirely if no remote resolver needs to reach this
+# firewall. Keep it to serve both, which is what a CARP node wants.
+```
+On the resolver, in `/var/unbound/etc/pfui_unbound.yml`:
+```
+FIREWALLS:
+  - SOCKET: /var/run/pfui/pfui_firewall.sock   # this host, over the local socket
+  - HOST: 10.10.1.253                          # the CARP peer, over the network
+    PORT: 10001
+```
+The transport is per entry, so one resolver can use both at once. `SOCKET_PROTO`
+applies only to the `HOST` entries.
+
+**Access control moves from PF to the filesystem.** The socket is `0660`, owned by
+group `_pfui`, inside a directory only that group may traverse, and the resolver's
+account (`_unbound`) must be a member — so membership of `_pfui` is what authorises
+injecting PF whitelist entries. Both installers manage the group:
+`install-server-python.sh` creates it, and `install-client-unbound.sh` adds
+`_unbound` to it when it finds a firewall installed on the same host. **Unbound
+must be restarted** for a new group membership to take effect; a resolver that is
+not in the group fails to connect with `EACCES`.
+
+If the firewall is on a different machine, none of this applies: use `HOST` and
+restrict the listening port in `pf.conf` as before.
+
 ------
 ### Compatibility;
 

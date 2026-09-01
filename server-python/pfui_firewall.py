@@ -23,6 +23,7 @@
     https://man.openbsd.org/ioctl.2 https://docs.python.org/2/library/fcntl.html
 """
 
+import grp
 import logging
 import os
 import stat
@@ -40,7 +41,7 @@ from redis import StrictRedis
 from service import Service, find_syslog
 from yaml import safe_load
 
-from socket import AF_INET, AF_INET6, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET
+from socket import AF_INET, AF_INET6, AF_UNIX, SOCK_DGRAM, SO_REUSEADDR, SOL_SOCKET
 from socket import SOCK_STREAM, IPPROTO_TCP, TCP_NODELAY, AddressFamily
 from socket import error as socket_error, timeout as socket_timeout
 from socket import socket
@@ -55,12 +56,28 @@ CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 # UDP mode only; see the receive loop in run(). TCP is bounded by MAX_MESSAGE.
 UDP_DGRAM_CEILING = 1400
 
+# Mode the local socket ends up with, and the umask that gets it there without
+# ever being briefly wider. Not configurable: the socket is the whole access
+# control for a local resolver, and the only reason to widen it is a mistake.
+UNIX_SOCKET_MODE = 0o660
+UNIX_SOCKET_UMASK = 0o177
+
+# Longest usable SOCKET_UNIX path. OpenBSD's sockaddr_un.sun_path is 104 bytes
+# including the terminator; Linux allows 108. The smaller limit is checked so the
+# failure is a named configuration error at load rather than an "AF_UNIX path too
+# long" OSError out of bind() on the platform PFUI targets.
+UNIX_PATH_MAX = 103
+
 # Every key the daemon reads, with the value assumed when the yml omits it
 CONFIG_DEFAULTS = {
     "LOGGING": True,
     "LOG_LEVEL": "DEBUG",
     "SOCKET_PROTO": "TCP",
     "SOCKET_PORT": 10001,
+    # Local stream socket for a resolver on this same host. Empty disables it.
+    "SOCKET_UNIX": "",
+    # Group allowed to connect; the resolver's account must be a member
+    "SOCKET_UNIX_GROUP": "_pfui",
     "SOCKET_TIMEOUT": 3,
     "SOCKET_BUFFER": 1024,
     "SOCKET_BACKLOG": 128,
@@ -76,12 +93,9 @@ CONFIG_DEFAULTS = {
     "DEVPF": "/dev/pf",
 }
 
-# Keys with no safe default. SOCKET_LISTEN is here rather than defaulted to
-# 0.0.0.0 because the port it binds injects entries into the PF whitelist and is
-# unauthenticated, so a missing address must stop the daemon rather than quietly
-# offer that to every interface.
+# Keys with no safe default. SOCKET_LISTEN is deliberately not among them and
+# not defaulted either: see the network-listener rule in load_config.
 CONFIG_REQUIRED = {
-    "SOCKET_LISTEN": "listen address; set the inside interface IP, never 0.0.0.0",
     "AF4_TABLE": "IPv4 PF Table",
     "AF4_FILE": "IPv4 PF Persist file",
     "AF6_TABLE": "IPv6 PF Table",
@@ -106,16 +120,43 @@ def load_config(location: str = CONFIG_LOCATION) -> dict:
             + ", ".join(missing)
         )
 
-    # Normalised and validated here because run() selects the listener by exact
-    # match. Anything else matched neither branch, fell through to the shutdown
-    # path and exited 0 as though it had served, and a lowercase 'udp' also
-    # slipped past the ALLOW_INSECURE_UDP gate
+    # Normalised and validated here because run() selects its network listener by
+    # exact match. Anything else matched neither branch, fell through to the
+    # shutdown path and exited 0 as though it had served, and a lowercase 'udp'
+    # also slipped past the ALLOW_INSECURE_UDP gate
     cfg["SOCKET_PROTO"] = str(cfg["SOCKET_PROTO"]).strip().upper()
     if cfg["SOCKET_PROTO"] not in ("TCP", "UDP"):
         raise ValueError(
             f"SOCKET_PROTO must be TCP or UDP, not '{cfg['SOCKET_PROTO']}'"
         )
 
+    cfg["SOCKET_UNIX"] = str(cfg["SOCKET_UNIX"] or "").strip()
+    if cfg["SOCKET_UNIX"] and not cfg["SOCKET_UNIX"].startswith("/"):
+        # A relative path would be resolved against whatever directory rc.subr
+        # happened to start the daemon in
+        raise ValueError(
+            f"SOCKET_UNIX must be an absolute path, not '{cfg['SOCKET_UNIX']}'"
+        )
+    if len(cfg["SOCKET_UNIX"].encode("utf-8")) > UNIX_PATH_MAX:
+        raise ValueError(
+            f"SOCKET_UNIX is {len(cfg['SOCKET_UNIX'])} bytes, over the "
+            f"{UNIX_PATH_MAX} byte limit on a socket path: '{cfg['SOCKET_UNIX']}'"
+        )
+
+    # A listener has to be asked for explicitly, one way or the other. Both may
+    # be set: a firewall can serve its own resolver over the local socket and a
+    # remote one - a CARP peer's - over the network at the same time.
+    #
+    # SOCKET_LISTEN is neither required nor defaulted to 0.0.0.0. The port it
+    # binds injects entries into the PF whitelist and is unauthenticated, so
+    # publishing it on every interface is never the right guess; leaving it out
+    # is how a same-host deployment says "local socket only".
+    if not cfg.get("SOCKET_LISTEN") and not cfg["SOCKET_UNIX"]:
+        raise ValueError(
+            "no listener configured: set SOCKET_LISTEN (the inside interface IP, "
+            "never 0.0.0.0) for remote resolvers, or SOCKET_UNIX for a resolver "
+            "on this host, or both"
+        )
     return cfg
 
 
@@ -489,6 +530,7 @@ class PFUI_Firewall(Service):
         self.threads = []
         self.soc = None  # UDP Listen Socket
         self.conn = None  # TCP Listen Socket
+        self.unix = None  # Local (AF_UNIX) Listen Socket
         self.db = None
 
         # Load YAML Configuration
@@ -563,7 +605,11 @@ class PFUI_Firewall(Service):
         self.pool = ThreadPoolExecutor(max_workers=workers)
         self.slots = BoundedSemaphore(self.max_inflight)
 
-        if self.cfg["SOCKET_PROTO"] == "UDP" and not self.cfg["ALLOW_INSECURE_UDP"]:
+        if (
+            self.cfg["SOCKET_PROTO"] == "UDP"
+            and self.cfg.get("SOCKET_LISTEN")
+            and not self.cfg["ALLOW_INSECURE_UDP"]
+        ):
             self.logger.error(
                 "PFUIFW: UDP mode is spoofable (a datagram source address is not "
                 "verified) and is intended for lab use only. Set "
@@ -572,130 +618,317 @@ class PFUI_Firewall(Service):
             )
             sys.exit(5)
 
-        # Listen for connections
-        # Default TCP time_wait = 60; 64000 / 60 = 1,066qps
-        # sysctl net.inet.tcp.keepidle=10; 64000 / 10 = 6,400qps
-        if self.cfg["SOCKET_PROTO"] == "TCP":
-            self.conn = socket(AF_INET, SOCK_STREAM)  # TCP Stream Socket
-            self.conn.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)  # Disable Nagle
-            # self.conn.setsockopt(socket.SOL_TCP, 23, 5)
-            # 23 = TCP_FASTOPEN, 5 = Max TFO queue (not yet supported in OpenBSD)
-            self.conn.setsockopt(
-                SOL_SOCKET, SO_REUSEADDR, True
-            )  # Fast Listen Socket reuse
-            self.conn.settimeout(
-                self.cfg["SOCKET_TIMEOUT"]
-            )  # accept() connection timeout to check TERM
-            self.conn.bind((self.cfg["SOCKET_LISTEN"], self.cfg["SOCKET_PORT"]))
-            self.conn.listen(self.cfg["SOCKET_BACKLOG"])
-
-            while not self.got_sigterm():  # Watch Socket until TERM
-                try:
-                    # Hand each accepted connection to the pool
-                    conn, (ip, port) = self.conn.accept()  # Waits self.conn.settimeout
-                    self._prepare_conn(conn)
-                    if not self.slots.acquire(blocking=False):
-                        # Shed rather than queue: PF still denies the traffic, and
-                        # PFUI_Unbound sees a socket failure instead of a stall
-                        self.logger.error(
-                            f"PFUIFW: At capacity ({self.max_inflight}), shedding {ip}:{port}"
-                        )
-                        conn.close()
-                        continue
-                    try:
-                        self._submit(proto="TCP", conn=conn, ip=ip, port=port)
-                    except Exception:
-                        self.slots.release()
-                        conn.close()
-                        self.logger.exception("PFUIFW: Error starting receiver thread")
-                except socket_timeout:
-                    continue
-                except socket_error as e:
-                    # accept() can fail transiently: ECONNABORTED when a peer
-                    # goes away, EMFILE/ENFILE under fd pressure. Neither is a
-                    # reason to stop serving.
-                    self.logger.error(f"PFUIFW: accept() failed, continuing. {e}")
-                    sleep(0.1)
-                    continue
-                except Exception:
-                    self.logger.exception("PFUIFW: Unexpected accept() error, continuing")
-                    sleep(0.5)
-                    continue
-
-        # UDP is experimental and spoofable. The Unbound module runs per lookup, so
-        # each lookup is a fresh exchange; with UDP defaults that caps out near 213qps
-        elif self.cfg["SOCKET_PROTO"] == "UDP":
-            # setup listen socket
-            self.soc = socket(AF_INET, SOCK_DGRAM)  # UDP Datagram Socket
-            self.soc.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
-            self.soc.settimeout(
-                self.cfg["SOCKET_TIMEOUT"]
-            )  # recvfrom() data timeout to check TERM
-            self.soc.bind((self.cfg["SOCKET_LISTEN"], self.cfg["SOCKET_PORT"]))
-
-            while not self.got_sigterm():  # Watch Socket until TERM
-                try:
-                    # KNOWN LIMITATION, UDP mode only: this buffer is the hard
-                    # ceiling on a PFUI message over UDP. A larger datagram is
-                    # truncated by the kernel, the decode then fails, and the
-                    # answer is never whitelisted. Reading one byte past the
-                    # ceiling is what makes that detectable instead of silent.
-                    #
-                    # Raising the buffer would not make large answers work: a
-                    # datagram above the link MTU fragments, and PF commonly
-                    # drops fragments. UDP mode therefore cannot carry the large
-                    # answers TCP handles via MAX_MESSAGE, and this is one reason
-                    # UDP is gated behind ALLOW_INSECURE_UDP. TCP has no such
-                    # limit; use it.
-                    dgram, (ip, port) = self.soc.recvfrom(UDP_DGRAM_CEILING + 1)
-                    if len(dgram) > UDP_DGRAM_CEILING:
-                        self.logger.error(
-                            f"PFUIFW: Datagram from {ip}:{port} exceeds the "
-                            f"{UDP_DGRAM_CEILING} byte UDP ceiling "
-                            f"({len(dgram)}+ bytes); dropping. This answer cannot "
-                            f"be whitelisted over UDP - switch SOCKET_PROTO to TCP."
-                        )
-                        continue
-                    # ACKDATA is sent by receiver_thread once the datagram has
-                    # decoded to a valid PFUI structure, so this cannot be used
-                    # as a blind reflector
-                except socket_timeout:
-                    continue
-                except socket_error:
-                    continue
-                except Exception as e:
-                    self.logger.exception(f"PFUIFW: UDP socket exception {e}")
-                    sleep(0.5)
-                    continue
-
-                if dgram:  # Hand each datagram to the pool
-                    if not self.slots.acquire(blocking=False):
-                        self.logger.error(
-                            f"PFUIFW: At capacity ({self.max_inflight}), dropping {ip}:{port}"
-                        )
-                        continue
-                    try:
-                        self._submit(proto="UDP", dgram=dgram, ip=ip, port=port)
-                    except Exception:
-                        self.slots.release()
-                        self.logger.exception("PFUIFW: Error in receiver thread")
-
-        else:
-            # Unreachable: __init__ validates SOCKET_PROTO. Kept so that a future
-            # path which sets it after load fails loudly instead of falling
-            # through to the shutdown below and exiting 0 without ever listening
-            self.logger.error(
-                f"PFUIFW: SOCKET_PROTO '{self.cfg['SOCKET_PROTO']}' is not TCP or UDP; "
-                f"nothing was listening."
-            )
+        # Bind every configured listener before serving any of them, so a bind
+        # failure is a startup failure rather than a thread that quietly died
+        servers = []
+        try:
+            if self.cfg["SOCKET_UNIX"]:
+                self.unix = self._bind_unix(self.cfg["SOCKET_UNIX"])
+                servers.append((self._serve_stream, ("UNIX", self.unix)))
+            if self.cfg.get("SOCKET_LISTEN"):
+                if self.cfg["SOCKET_PROTO"] == "TCP":
+                    self.conn = self._bind_tcp()
+                    servers.append((self._serve_stream, ("TCP", self.conn)))
+                else:
+                    self.soc = self._bind_udp()
+                    servers.append((self._serve_udp, (self.soc,)))
+        except Exception:
+            # _bind_unix exits by itself, and SystemExit is not an Exception, so
+            # this is the network listener failing after the local one succeeded:
+            # unlink it rather than leave a node for the next start to reclaim
+            self.logger.exception("PFUIFW: Failed to bind a listener")
+            self._remove_unix_socket()
             sys.exit(6)
+
+        if not servers:  # load_config refuses this, so reaching it is a bug
+            self.logger.error("PFUIFW: No listener configured; nothing to serve.")
+            sys.exit(6)
+
+        # One thread per listener rather than one poll loop over all of them: each
+        # loop already blocks only for SOCKET_TIMEOUT before re-checking for TERM,
+        # and the pool, the slot semaphore and the shed path are shared and
+        # thread-safe, so this keeps each accept path exactly as it was
+        listen_threads = []
+        for target, args in servers:
+            thread = Thread(target=self._serve, args=(target, args), daemon=True)
+            thread.start()
+            listen_threads.append(thread)
+        for thread in listen_threads:
+            thread.join()
 
         # Shut down
         self.pool.shutdown(wait=True)
         for t in self.threads:
             t.join()
+        self._remove_unix_socket()
         self.db.close()
         self.logger.info("PFUIFW: [-] PFUI_Firewall Service Stopped.")
+
+    def _serve(self, target, args):
+        """Run one listener's loop, surviving anything it raises.
+
+        A listener thread that died silently would leave the daemon running and
+        apparently healthy while nothing was being whitelisted on that transport.
+        """
+        try:
+            target(*args)
+        except Exception:
+            self.logger.exception("PFUIFW: Listener loop failed")
+
+    def _bind_tcp(self):
+        """Bind the network stream listener.
+
+        Default TCP time_wait = 60; 64000 / 60 = 1,066qps
+        sysctl net.inet.tcp.keepidle=10; 64000 / 10 = 6,400qps
+        """
+        conn = socket(AF_INET, SOCK_STREAM)  # TCP Stream Socket
+        conn.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)  # Disable Nagle
+        # conn.setsockopt(socket.SOL_TCP, 23, 5)
+        # 23 = TCP_FASTOPEN, 5 = Max TFO queue (not yet supported in OpenBSD)
+        conn.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)  # Fast Listen Socket reuse
+        conn.settimeout(
+            self.cfg["SOCKET_TIMEOUT"]
+        )  # accept() connection timeout to check TERM
+        conn.bind((self.cfg["SOCKET_LISTEN"], self.cfg["SOCKET_PORT"]))
+        conn.listen(self.cfg["SOCKET_BACKLOG"])
+        self.logger.info(
+            f"PFUIFW: [+] Listening on TCP "
+            f"{self.cfg['SOCKET_LISTEN']}:{self.cfg['SOCKET_PORT']}"
+        )
+        return conn
+
+    def _bind_udp(self):
+        """Bind the network datagram listener.
+
+        UDP is experimental and spoofable. The Unbound module runs per lookup, so
+        each lookup is a fresh exchange; with UDP defaults that caps out near
+        213qps.
+        """
+        soc = socket(AF_INET, SOCK_DGRAM)  # UDP Datagram Socket
+        soc.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
+        soc.settimeout(
+            self.cfg["SOCKET_TIMEOUT"]
+        )  # recvfrom() data timeout to check TERM
+        soc.bind((self.cfg["SOCKET_LISTEN"], self.cfg["SOCKET_PORT"]))
+        self.logger.info(
+            f"PFUIFW: [+] Listening on UDP "
+            f"{self.cfg['SOCKET_LISTEN']}:{self.cfg['SOCKET_PORT']}"
+        )
+        return soc
+
+    def _bind_unix(self, path):
+        """Bind the local stream listener for a resolver on this same host.
+
+        The filesystem is the whole access control here, in place of the pf.conf
+        source restriction that guards the network listener, so this fails closed:
+        anything that would leave the socket reachable by more than the configured
+        group exits the daemon instead of serving.
+        """
+        parent = os.path.dirname(path) or "/"
+        if not os.path.isdir(parent):
+            self.logger.error(
+                f"PFUIFW: SOCKET_UNIX directory {parent} does not exist; "
+                f"rc.d/pfui_firewall creates it on start."
+            )
+            sys.exit(6)
+
+        # A world-writable parent means anyone can replace the socket with their
+        # own and be handed the resolver's messages, whatever the socket's mode
+        parent_mode = os.stat(parent).st_mode
+        if parent_mode & stat.S_IWOTH and not parent_mode & stat.S_ISVTX:
+            self.logger.error(
+                f"PFUIFW: SOCKET_UNIX directory {parent} is world-writable "
+                f"({oct(stat.S_IMODE(parent_mode))}); refusing to bind there."
+            )
+            sys.exit(6)
+
+        self._reclaim_unix_socket(path)
+
+        listener = socket(AF_UNIX, SOCK_STREAM)
+        listener.settimeout(self.cfg["SOCKET_TIMEOUT"])  # accept() checks TERM
+        # bind() creates the node with the process umask, so it is narrowed here
+        # rather than by a chmod afterwards: otherwise the socket is connectable
+        # by everyone for the moment in between
+        previous_umask = os.umask(UNIX_SOCKET_UMASK)
+        try:
+            listener.bind(path)
+        finally:
+            os.umask(previous_umask)
+
+        try:
+            self._grant_unix_socket(path)
+        except Exception:
+            self.logger.exception(
+                f"PFUIFW: Cannot restrict {path} to group "
+                f"{self.cfg['SOCKET_UNIX_GROUP']}; refusing to serve on it."
+            )
+            # Explicit path and listener: self.unix is not set until run() has the
+            # bound socket back, so a refused start would otherwise leave the node
+            # behind for the next start to reclaim
+            self._remove_unix_socket(path=path, listener=listener)
+            sys.exit(6)
+
+        listener.listen(self.cfg["SOCKET_BACKLOG"])
+        self.logger.info(
+            f"PFUIFW: [+] Listening on UNIX {path} "
+            f"(group {self.cfg['SOCKET_UNIX_GROUP']}, mode {oct(UNIX_SOCKET_MODE)})"
+        )
+        return listener
+
+    def _reclaim_unix_socket(self, path):
+        """Remove a socket file left behind by an unclean stop.
+
+        bind() fails with EADDRINUSE on a leftover node, so it has to go, but only
+        once nothing answers on it: unlinking a live daemon's socket would leave
+        that daemon running and unreachable.
+        """
+        if not os.path.exists(path):
+            return
+        probe = socket(AF_UNIX, SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(path)
+        except (ConnectionRefusedError, FileNotFoundError):
+            pass  # Nothing is listening; the node is stale
+        except OSError as e:
+            self.logger.error(
+                f"PFUIFW: {path} exists and cannot be tested ({e}); "
+                f"remove it by hand if no PFUI_Firewall is running."
+            )
+            sys.exit(6)
+        else:
+            self.logger.error(
+                f"PFUIFW: Another PFUI_Firewall is already listening on {path}."
+            )
+            sys.exit(6)
+        finally:
+            probe.close()
+        self.logger.info(f"PFUIFW: Removing stale socket {path}")
+        os.unlink(path)
+
+    def _grant_unix_socket(self, path):
+        """Hand the socket to SOCKET_UNIX_GROUP, and to nobody else."""
+        group = self.cfg["SOCKET_UNIX_GROUP"]
+        gid = grp.getgrnam(str(group)).gr_gid  # KeyError if the group is missing
+        os.chown(path, -1, gid)
+        os.chmod(path, UNIX_SOCKET_MODE)
+        granted = stat.S_IMODE(os.stat(path).st_mode)
+        if granted != UNIX_SOCKET_MODE:
+            raise OSError(f"{path} is mode {oct(granted)}, expected {oct(UNIX_SOCKET_MODE)}")
+
+    def _remove_unix_socket(self, path=None, listener=None):
+        """Unlink our own socket on the way out, so the next start is clean.
+
+        Defaults to the running daemon's socket; both are passed explicitly by the
+        bind path, which has to clean up a socket run() has not been handed yet.
+        """
+        path = path or self.cfg.get("SOCKET_UNIX")
+        listener = listener if listener is not None else self.unix
+        if not path or listener is None:
+            return
+        try:
+            listener.close()
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            self.logger.exception(f"PFUIFW: Could not remove {path}")
+
+    def _serve_stream(self, kind, listener):
+        """Accept loop shared by the TCP and UNIX listeners.
+
+        Both carry the same length-prefixed frames and get the same replies, so
+        the only difference is how a peer is named in the log: an address and port
+        for TCP, the socket path for UNIX, where accept() reports no peer at all.
+        """
+        while not self.got_sigterm():  # Watch Socket until TERM
+            try:
+                # Hand each accepted connection to the pool
+                conn, address = listener.accept()  # Waits listener.settimeout
+                if kind == "UNIX":
+                    peer, ip, port = self.cfg["SOCKET_UNIX"], None, None
+                else:
+                    ip, port = address
+                    peer = f"{ip}:{port}"
+                self._prepare_conn(conn)
+                if not self.slots.acquire(blocking=False):
+                    # Shed rather than queue: PF still denies the traffic, and
+                    # PFUI_Unbound sees a socket failure instead of a stall
+                    self.logger.error(
+                        f"PFUIFW: At capacity ({self.max_inflight}), shedding {peer}"
+                    )
+                    conn.close()
+                    continue
+                try:
+                    self._submit(proto=kind, conn=conn, peer=peer, ip=ip, port=port)
+                except Exception:
+                    self.slots.release()
+                    conn.close()
+                    self.logger.exception("PFUIFW: Error starting receiver thread")
+            except socket_timeout:
+                continue
+            except socket_error as e:
+                # accept() can fail transiently: ECONNABORTED when a peer
+                # goes away, EMFILE/ENFILE under fd pressure. Neither is a
+                # reason to stop serving.
+                self.logger.error(f"PFUIFW: accept() failed, continuing. {e}")
+                sleep(0.1)
+                continue
+            except Exception:
+                self.logger.exception("PFUIFW: Unexpected accept() error, continuing")
+                sleep(0.5)
+                continue
+
+    def _serve_udp(self, soc):
+        """Receive loop for the network datagram listener."""
+        while not self.got_sigterm():  # Watch Socket until TERM
+            try:
+                # KNOWN LIMITATION, UDP mode only: this buffer is the hard
+                # ceiling on a PFUI message over UDP. A larger datagram is
+                # truncated by the kernel, the decode then fails, and the
+                # answer is never whitelisted. Reading one byte past the
+                # ceiling is what makes that detectable instead of silent.
+                #
+                # Raising the buffer would not make large answers work: a
+                # datagram above the link MTU fragments, and PF commonly
+                # drops fragments. UDP mode therefore cannot carry the large
+                # answers TCP handles via MAX_MESSAGE, and this is one reason
+                # UDP is gated behind ALLOW_INSECURE_UDP. TCP has no such
+                # limit; use it, or SOCKET_UNIX on the same host.
+                dgram, (ip, port) = soc.recvfrom(UDP_DGRAM_CEILING + 1)
+                if len(dgram) > UDP_DGRAM_CEILING:
+                    self.logger.error(
+                        f"PFUIFW: Datagram from {ip}:{port} exceeds the "
+                        f"{UDP_DGRAM_CEILING} byte UDP ceiling "
+                        f"({len(dgram)}+ bytes); dropping. This answer cannot "
+                        f"be whitelisted over UDP - switch SOCKET_PROTO to TCP."
+                    )
+                    continue
+                # ACKDATA is sent by receiver_thread once the datagram has
+                # decoded to a valid PFUI structure, so this cannot be used
+                # as a blind reflector
+            except socket_timeout:
+                continue
+            except socket_error:
+                continue
+            except Exception as e:
+                self.logger.exception(f"PFUIFW: UDP socket exception {e}")
+                sleep(0.5)
+                continue
+
+            if dgram:  # Hand each datagram to the pool
+                if not self.slots.acquire(blocking=False):
+                    self.logger.error(
+                        f"PFUIFW: At capacity ({self.max_inflight}), dropping {ip}:{port}"
+                    )
+                    continue
+                try:
+                    self._submit(
+                        proto="UDP", dgram=dgram, peer=f"{ip}:{port}", ip=ip, port=port
+                    )
+                except Exception:
+                    self.slots.release()
+                    self.logger.exception("PFUIFW: Error in receiver thread")
 
     def _prepare_conn(self, conn):
         """Apply per-connection options to a freshly accepted socket.
@@ -707,10 +940,15 @@ class PFUI_Firewall(Service):
         is not guaranteed across platforms.
         """
         conn.settimeout(float(self.cfg["SOCKET_TIMEOUT"]))
-        try:
-            conn.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)
-        except Exception:  # Not fatal; costs latency, not correctness
-            self.logger.exception("PFUIFW: Could not set TCP_NODELAY on connection")
+        # Nagle is a TCP algorithm and there is nothing to disable on a local
+        # socket, where setting it raises rather than being ignored
+        if conn.family in (AF_INET, AF_INET6):
+            try:
+                conn.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)
+            except Exception:  # Not fatal; costs latency, not correctness
+                self.logger.exception(
+                    "PFUIFW: Could not set TCP_NODELAY on connection"
+                )
         return conn
 
     def _submit(self, **kwargs):
@@ -726,7 +964,8 @@ class PFUI_Firewall(Service):
             # so without this a recurring receiver failure would be silent
             self.logger.error(f"PFUIFW: Receiver task failed: {exc!r}", exc_info=exc)
 
-    def receiver_thread(self, proto, conn=None, dgram=None, ip=None, port=None):
+    def receiver_thread(self, proto, conn=None, dgram=None, peer="", ip=None,
+                        port=None):
         """Receive all data, update PF Table and Redis DB
         Data Structure:
         {'kind': 'rr'|'cache', 'qname': qname, 'AF4': [{"ip": ipv4_addr, "ttl": ip_ttl}], 'AF6': [...]}
@@ -734,7 +973,12 @@ class PFUI_Firewall(Service):
         SOCKET_BUFFER is the read chunk size, not a message limit; message size is
         bounded by the protocol's MAX_MESSAGE. Raising it costs memory per
         connection and saves syscalls on large answers.
+
+        'peer' is how this sender is named in the log. AF_UNIX accept() reports
+        no peer address at all, so it cannot be derived here; ip and port stay
+        for the UDP reply, which is the only path that needs to address one.
         """
+        peer = peer or f"{ip}:{port}"
 
         def disconnect(proto, soc, conn, msg):
             if msg:
@@ -754,7 +998,7 @@ class PFUI_Firewall(Service):
                     except Exception:
                         pass  # PFUI_Unbound may have closed socket already (non-blocking cache responses)
                 # Do not soc.close(), as this stops the listening socket
-            elif proto == "TCP":
+            elif proto in ("TCP", "UNIX"):
                 try:
                     conn.sendall(msg)
                 except Exception:
@@ -767,7 +1011,7 @@ class PFUI_Firewall(Service):
 
         # Read data from network
         data = None
-        if proto == "TCP":
+        if proto in ("TCP", "UNIX"):
 
             received = []
 
@@ -790,12 +1034,12 @@ class PFUI_Firewall(Service):
                     # decodes to None, and calling that an empty payload was
                     # wrong: it falls through to the shape check below instead
                     self.logger.error(
-                        f"PFUIFW: Empty payload, disconnecting {ip}:{port}"
+                        f"PFUIFW: Empty payload, disconnecting {peer}"
                     )
                     disconnect(proto, self.soc, conn, msg="Empty payload")
                     return
             except socket_timeout:
-                self.logger.error(f"PFUIFW: Socket recv timeout {ip}:{port}")
+                self.logger.error(f"PFUIFW: Socket recv timeout {peer}")
                 disconnect(proto, self.soc, conn, msg="Socket timeout")
                 return
             except BadLength as e:
@@ -803,25 +1047,25 @@ class PFUI_Firewall(Service):
                 # documents and server-c already distinguishes: a bad prefix is
                 # a different diagnosis from a sender that under-delivered
                 self.logger.error(
-                    f"PFUIFW: Bad frame length from {ip}:{port}, disconnecting. {e}"
+                    f"PFUIFW: Bad frame length from {peer}, disconnecting. {e}"
                 )
                 disconnect(proto, self.soc, conn, msg="Bad length")
                 return
             except Truncated as e:
                 self.logger.error(
-                    f"PFUIFW: Truncated payload from {ip}:{port}, disconnecting. {e}"
+                    f"PFUIFW: Truncated payload from {peer}, disconnecting. {e}"
                 )
                 disconnect(proto, self.soc, conn, msg="Truncated")
                 return
             except WireError as e:
                 self.logger.error(
-                    f"PFUIFW: Bad frame from {ip}:{port}, disconnecting. {e}"
+                    f"PFUIFW: Bad frame from {peer}, disconnecting. {e}"
                 )
                 disconnect(proto, self.soc, conn, msg="Bad frame")
                 return
             except Exception:
                 self.logger.exception(
-                    f"PFUIFW: Failed to decode stream, disconnecting {ip}:{port}"
+                    f"PFUIFW: Failed to decode stream, disconnecting {peer}"
                 )
                 disconnect(proto, self.soc, conn, msg="Failed to decode")
                 return
@@ -833,14 +1077,14 @@ class PFUI_Firewall(Service):
                 data = decode(dgram, compress=self.cfg["COMPRESS"])
             except Exception:
                 self.logger.exception(
-                    f"PFUIFW: Failed to decode datagram {ip}:{port} {dgram}"
+                    f"PFUIFW: Failed to decode datagram {peer} {dgram}"
                 )
                 disconnect(proto, self.soc, conn, "Failed to decode")
                 return
 
         if self.stats:
             ntime = time()
-            self.logger.info(f"PFUIFW: Received {data} from {ip}:{port} ({proto})")
+            self.logger.info(f"PFUIFW: Received {data} from {peer} ({proto})")
 
         # Input Request
         # Shape first, then contents: a non-dict payload has no 'kind' to be
@@ -885,7 +1129,7 @@ class PFUI_Firewall(Service):
             try:
                 self.soc.sendto(b"ACKDATA", (ip, port))
             except Exception:
-                self.logger.exception(f"PFUIFW: Failed to ACKDATA {ip}:{port}")
+                self.logger.exception(f"PFUIFW: Failed to ACKDATA {peer}")
 
         if self.stats:
             vtime = time()

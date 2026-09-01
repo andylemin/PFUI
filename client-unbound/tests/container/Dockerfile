@@ -47,8 +47,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
-# Mirrors the OpenBSD account Unbound drops to after binding
-RUN id _unbound >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin _unbound
+# Mirrors the OpenBSD account Unbound drops to after binding, and the shared group
+# install-server-python.sh creates for the local PFUI socket. Unbound really does
+# run as _unbound here, so the resolver only reaches the socket if that membership
+# and the socket's mode are right - the same thing an operator depends on
+RUN id _unbound >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin _unbound \
+ && groupadd -f _pfui \
+ && usermod -aG _pfui _unbound
 
 # configure --with-pythonmodule looks for 'python', not 'python3', and fails
 # outright without it. install-client-unbound.sh makes the same symlink, so this

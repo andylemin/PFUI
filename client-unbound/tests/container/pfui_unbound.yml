@@ -13,6 +13,10 @@ COMPRESS: True         # Exercises the lz4 path, as a production install does
 BLOCKING: True         # The resolver waits for the stub's ACKUPDATE
 
 DEFAULT_PORT: 10001
+# Both transports at once, which is what a CARP node with a local resolver runs:
+# the firewall on this host over its socket, a remote one over TCP. verify.py
+# stands in for both and checks the same message reaches each.
 FIREWALLS:
+  - SOCKET: /var/run/pfui/pfui_firewall.sock
   - HOST: 127.0.0.1
     PORT: 10001

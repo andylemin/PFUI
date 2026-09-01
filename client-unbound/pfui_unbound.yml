@@ -15,11 +15,22 @@ BREAKER_COOLOFF: 30    # Seconds to skip an unreachable firewall before probing 
 COMPRESS: True         # Compress and Decompress PFUI_Unbound->PFUI_Firewall data
 
 DEFAULT_PORT: 10001    # Default port where PFUI_Firewall is listening
+
+# Each entry names one PFUI_Firewall, reached either over the network (HOST, with
+# SOCKET_PROTO above) or over a local socket (SOCKET) when it runs on THIS host.
+# One entry, one transport: set HOST or SOCKET, not both.
 FIREWALLS:             # List of Firewall Hosts targeting OpenBSD PF Firewalls running PFUI_Firewall
   - HOST: 127.0.0.1    # Inside IP of PF Firewall running PFUI_Firewall
     PORT: 10001        # Port for PFUI_Firewall running on PF Firewall
 #  - HOST:             # IP of second PF Firewall running PFUI_Firewall (Eg, CARP Host)
 #    PORT:             # Port for second PFUI_Firewall running on PF Firewall
 
+# Same-host deployment: PFUI_Firewall on this machine, over its local socket.
+# Faster than loopback TCP and needs no pf.conf rule, but the resolver's user must
+# be in the firewall's SOCKET_UNIX_GROUP (see install-client-unbound.sh).
+#  - SOCKET: /var/run/pfui/pfui_firewall.sock
+
 # When operating PF Firewall Clusters using CARP, both firewall nodes should be configured as PF Table data is
 # NOT synced by PF-Sync  # TODO Verify since recent CARP re-write
+# On a CARP node running its own resolver, that means one SOCKET entry for the
+# firewall on this box and one HOST entry for the peer.

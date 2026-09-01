@@ -66,6 +66,21 @@ if [[ "$OS" = "OpenBSD" ]]; then
   useradd -g _pfui_firewall -s /sbin/nologin -d /var/empty _pfui_firewall 2>/dev/null || true
   id _pfui_firewall >/dev/null || die "daemon user _pfui_firewall was not created"
 
+  # Shared group for the local socket (SOCKET_UNIX), which a PFUI_Unbound on this
+  # same host connects to. It is a group of its own rather than reusing _unbound
+  # or _pfui_firewall: membership of it means "may inject PF whitelist entries",
+  # and that should not be implied by running as the resolver or as the daemon.
+  # install-client-unbound.sh adds _unbound to it when a resolver is installed here.
+  echo "PFUIFW: Creating group '_pfui' (permits the local PFUI socket)"
+  groupadd _pfui 2>/dev/null || true
+  groupinfo _pfui >/dev/null 2>&1 || die "group _pfui was not created"
+  # -G replaces secondary memberships on OpenBSD, so it is only applied when the
+  # daemon account is not already in the group. _pfui_firewall is created here and
+  # has no other secondary groups
+  if ! groupinfo _pfui | grep -qw _pfui_firewall; then
+    usermod -G _pfui _pfui_firewall || die "cannot add _pfui_firewall to _pfui"
+  fi
+
   # PF ioctl access without wheel, which would also grant su. rc.d/pfui_firewall
   # re-applies this on every start, because MAKEDEV resets it on release upgrades
   chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf || die "cannot set /dev/pf ownership"
@@ -102,6 +117,12 @@ if [[ "$OS" = "OpenBSD" ]]; then
   echo "PFUIFW: An example pf.conf file is located at '/etc/pf-pfui-example.conf'"
   echo "PFUIFW: /etc/pf.conf is NOT modified; merge the PFUI tables and rules yourself"
 
+  # Where the daemon's pid file and, if SOCKET_UNIX is configured, its local socket
+  # live. Group _pfui at 0750 so only that group can traverse to the socket, and so
+  # the socket inherits the group; rc.d/pfui_firewall re-applies this on every start
+  install -d -o _pfui_firewall -g _pfui -m 750 /var/run/pfui \
+    || die "cannot create /var/run/pfui"
+
   echo "PFUIFW: Updating Persist files /var/spool/pfui/pfui_ipv<*>_domains"
   # Daemon-owned directory: file_push/file_pop need to create a .lock sidecar and
   # mkstemp here. pfctl reads the files as root, so no world access is needed.
@@ -128,4 +149,9 @@ else
 fi
 echo "PFUIFW: Enable service 'rcctl enable pfui_firewall'"
 echo "PFUIFW: Start service 'rcctl start pfui_firewall'"
+echo
+echo "PFUIFW: If PFUI_Unbound runs on THIS host, uncomment SOCKET_UNIX in"
+echo "        /etc/pfui_firewall.yml and add '- SOCKET: /var/run/pfui/pfui_firewall.sock'"
+echo "        to the resolver's FIREWALLS. No pf.conf rule is needed for that path;"
+echo "        membership of group '_pfui' is what permits it."
 
