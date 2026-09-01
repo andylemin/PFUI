@@ -75,11 +75,14 @@ def test_pop_dedupes_remaining_entries(persist):
     assert lines(persist) == ["1.1.1.1", "8.8.8.8"]
 
 
-def test_pop_preserves_file_mode(persist):
-    """mkstemp creates 0600; the replacement must keep the installed mode."""
-    os.chmod(persist, 0o640)
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o644, 0o660])
+def test_pop_preserves_file_mode(persist, mode):
+    """mkstemp creates 0600, so the replacement has to carry the mode over. It
+    used to be hardcoded to 0640, which reverted a tightened permission on the
+    next scan and loosened a 0600 file - and these files are PF's whitelist."""
+    os.chmod(persist, mode)
     fw.file_pop(Log(), False, persist, ["1.1.1.1"])
-    assert oct(os.stat(persist).st_mode & 0o777) == oct(0o640)
+    assert oct(os.stat(persist).st_mode & 0o777) == oct(mode)
 
 
 def test_pop_leaves_no_temp_files(persist):

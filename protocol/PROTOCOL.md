@@ -139,7 +139,13 @@ IPv6 spelling.
 | `ACKDATA` | UDP only. The datagram decoded to a valid message. Sent **after** validation, never on receipt. |
 | (silence) | UDP only. A refused datagram gets no reply at all, since its source address is unverified and a reply would make the server a reflector. |
 | `ACKUPDATE` | The PF tables have been updated. The client may release the DNS answer. |
-| any other | Refusal, with a short human-readable reason (`Missing kind`, `Bad frame`, `Bad length`, `Truncated`, `Failed to decode`, `Invalid datatype`, `Empty payload`, `Socket timeout`). |
+| any other | Refusal, with a short human-readable reason (`Missing kind`, `Bad frame`, `Bad length`, `Truncated`, `Failed to decode`, `Invalid datatype`, `No records`, `Empty payload`, `Socket timeout`). |
+
+`Bad length` and `Truncated` are separate reasons because they are separate
+faults: the first is a prefix a receiver refuses before buffering anything, the
+second is a sender that declared bytes it did not send. `Invalid datatype` is a
+payload that decoded to something other than a message object; `No records` is a
+well-formed message with no routable address left after validation.
 
 A client SHOULD treat anything other than `ACKUPDATE` as a failed update and log
 the reason, which is what a version skew looks like from the client side.

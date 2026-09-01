@@ -16,6 +16,21 @@ now as a larger change to the daemon's startup path.
 On OpenBSD `/dev` is a static on-disk directory, so the mode persists across
 reboots; what resets it is `MAKEDEV` during a release upgrade.
 
+## RR TTLs are stored exactly as sent
+
+`db_push` records the TTL the client reported, with no floor. An earlier
+`max(ttl, 3600)` contradicted the expiry rule in `PROTOCOL.md`, and with the
+shipped `TTL_MULTIPLIER: 4` it turned a 60 second answer into four hours of
+authorised egress. It also raised the `ttl` of 0 that means do-not-cache, which
+`validate.extract` deliberately preserves.
+
+`TTL_MULTIPLIER` is the only knob for holding entries longer than the record
+says, which is the right place for it: the operator sets it knowing why (browsers
+caching past the TTL), rather than inheriting a hidden minimum. The Redis
+`EXPIRE` written alongside each key stays a backstop for the scan loop and is
+floored at one second, because Redis treats `EXPIRE 0` (or negative) as "delete
+now".
+
 ## UDP has a message-size ceiling
 
 `UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a

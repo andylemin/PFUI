@@ -25,6 +25,7 @@
 
 import logging
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -47,12 +48,88 @@ from socket import socket
 from pfui.pf_ioctl import table_pop, table_push
 from pfui.store import expired_keys
 from pfui.validate import extract
-from pfui_wire import MAX_MESSAGE, WireError, decode, read_frame
+from pfui_wire import BadLength, MAX_MESSAGE, Truncated, WireError, decode, read_frame
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
 # UDP mode only; see the receive loop in run(). TCP is bounded by MAX_MESSAGE.
 UDP_DGRAM_CEILING = 1400
+
+# Every key the daemon reads, with the value assumed when the yml omits it
+CONFIG_DEFAULTS = {
+    "LOGGING": True,
+    "LOG_LEVEL": "DEBUG",
+    "SOCKET_PROTO": "TCP",
+    "SOCKET_PORT": 10001,
+    "SOCKET_TIMEOUT": 3,
+    "SOCKET_BUFFER": 1024,
+    "SOCKET_BACKLOG": 128,
+    "COMPRESS": True,
+    "MAX_WORKERS": 32,
+    "ALLOW_INSECURE_UDP": False,
+    "REDIS_HOST": "127.0.0.1",
+    "REDIS_PORT": 6379,
+    "REDIS_DB": 0,  # Valid range is 0-15
+    "SCAN_PERIOD": 60,
+    "TTL_MULTIPLIER": 2,
+    "CTL": "IOCTL",
+    "DEVPF": "/dev/pf",
+}
+
+# Keys with no safe default. SOCKET_LISTEN is here rather than defaulted to
+# 0.0.0.0 because the port it binds injects entries into the PF whitelist and is
+# unauthenticated, so a missing address must stop the daemon rather than quietly
+# offer that to every interface.
+CONFIG_REQUIRED = {
+    "SOCKET_LISTEN": "listen address; set the inside interface IP, never 0.0.0.0",
+    "AF4_TABLE": "IPv4 PF Table",
+    "AF4_FILE": "IPv4 PF Persist file",
+    "AF6_TABLE": "IPv6 PF Table",
+    "AF6_FILE": "IPv6 PF Persist file",
+}
+
+
+def load_config(location: str = CONFIG_LOCATION) -> dict:
+    """Read the yml, apply the defaults, and reject a config that cannot work.
+
+    Raises ValueError rather than exiting, so the daemon owns the exit status and
+    the rules stay testable off an OpenBSD host.
+    """
+    cfg = safe_load(open(location)) or {}
+    for key, value in CONFIG_DEFAULTS.items():
+        cfg.setdefault(key, value)
+
+    missing = [f"{k} ({v})" for k, v in CONFIG_REQUIRED.items() if k not in cfg]
+    if missing:
+        raise ValueError(
+            "not found in the YAML Config File, please configure: "
+            + ", ".join(missing)
+        )
+
+    # Normalised and validated here because run() selects the listener by exact
+    # match. Anything else matched neither branch, fell through to the shutdown
+    # path and exited 0 as though it had served, and a lowercase 'udp' also
+    # slipped past the ALLOW_INSECURE_UDP gate
+    cfg["SOCKET_PROTO"] = str(cfg["SOCKET_PROTO"]).strip().upper()
+    if cfg["SOCKET_PROTO"] not in ("TCP", "UDP"):
+        raise ValueError(
+            f"SOCKET_PROTO must be TCP or UDP, not '{cfg['SOCKET_PROTO']}'"
+        )
+
+    return cfg
+
+
+def _key_lifetime(window: int, cfg: dict) -> int:
+    """Seconds to keep a Redis key alive, as a backstop only.
+
+    scan_redis_db owns expiry; this just stops a key outliving the daemon that
+    would have swept it. One SCAN_PERIOD of slack keeps the key present for the
+    scan that should retire it, and the result is floored at 1 because Redis
+    treats EXPIRE 0 (or negative) as "delete now", which for a ttl of 0 would
+    discard the record before its own scan ever saw it.
+    """
+    return max(int(window) + int(cfg["SCAN_PERIOD"]), 1)
+
 
 def db_push(logger, log: bool, db, table: str, data: list, kind: str, qname: str,
             cfg: dict = None):
@@ -62,6 +139,12 @@ def db_push(logger, log: bool, db, table: str, data: list, kind: str, qname: str
     ("rr") or an absolute Unbound cache-expiry timestamp ("cache"). The losing
     field is deleted because hmset merges, and a key holding both would be
     ambiguous to the expiry scan.
+
+    The TTL is stored exactly as the sender reported it. There is no floor: the
+    protocol says a ttl of 0 means do-not-cache, so raising it here would have
+    authorised egress the answer explicitly asked not to keep, and any floor
+    contradicts the documented expiry rule. TTL_MULTIPLIER is the knob for
+    holding entries longer than the record says.
     """
 
     if log:
@@ -70,32 +153,31 @@ def db_push(logger, log: bool, db, table: str, data: list, kind: str, qname: str
     try:
         pipe = db.pipeline()
         now = int(time())
-        for ip, ttl in data:
+        for ip, rr_ttl in data:
             key = f"{table}^{ip}"
+            rr_ttl = int(rr_ttl)
             if kind == "cache":
                 pipe.hmset(
                     key,
-                    {"epoch": now, "kind": "cache", "expires": int(ttl), "qname": qname},
+                    {"epoch": now, "kind": "cache", "expires": rr_ttl, "qname": qname},
                 )
                 pipe.hdel(key, "ttl")
                 if cfg:
-                    pipe.expire(key, max(int(ttl) - now, 0) + int(cfg["SCAN_PERIOD"]))
+                    pipe.expire(key, _key_lifetime(max(rr_ttl - now, 0), cfg))
             else:
                 pipe.hmset(
                     key,
                     {
                         "epoch": now,
                         "kind": "rr",
-                        "ttl": max(int(ttl), 3600),  # min ttl = 1 hour
+                        "ttl": rr_ttl,
                         "qname": qname,
                     },
                 )
                 pipe.hdel(key, "expires")
                 if cfg:
                     pipe.expire(
-                        key,
-                        max(int(ttl), 3600) * int(cfg["TTL_MULTIPLIER"])
-                        + int(cfg["SCAN_PERIOD"]),
+                        key, _key_lifetime(rr_ttl * int(cfg["TTL_MULTIPLIER"]), cfg)
                     )
         pipe.execute()
         return True
@@ -165,6 +247,9 @@ def file_pop(logger, log: bool, file: str, ip_list: list):
     try:
         with _locked(file):
             with open(file, "r") as f:
+                # Read from the handle we are about to replace, so a tightened
+                # mode is carried over rather than reverted to a hardcoded one
+                mode = stat.S_IMODE(os.fstat(f.fileno()).st_mode)
                 # sorted() keeps content stable, so an unchanged whitelist
                 # produces an unchanged file. PF ignores line order.
                 keep = sorted(
@@ -179,7 +264,7 @@ def file_pop(logger, log: bool, file: str, ip_list: list):
             )
             with os.fdopen(fd, "w") as t:
                 t.write("".join(f"{ip}\n" for ip in keep))
-            os.chmod(tmp, 0o640)  # mkstemp creates 0600; keep the installed mode
+            os.chmod(tmp, mode)  # mkstemp creates 0600, whatever the file was
             os.replace(tmp, file)  # Atomic within one filesystem
         return True
     except Exception:
@@ -291,12 +376,28 @@ class ScanSync(Thread):
             # retain an expired entry for one more cycle, which is harmless.
             # pfctl costs a subprocess, but this runs once per SCAN_PERIOD, not
             # per query (see DECISIONS.md)
-            entries = list(
-                subprocess.Popen(
-                    ["pfctl", "-t", self.table, "-T", "show"], stdout=subprocess.PIPE
-                ).stdout
+            #
+            # The exit status is checked because a failing pfctl produces no
+            # output, which is indistinguishable from an empty table: the diff
+            # below would then find nothing to delete and try to re-add every
+            # live IP, so real table entries would never be expired and nothing
+            # would say why. Raising here lands in the handler below, which
+            # logs and skips the cycle.
+            shown = subprocess.run(
+                ["pfctl", "-t", self.table, "-T", "show"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            t_ips = [l.decode("utf-8").strip() for l in entries]
+            if shown.returncode != 0:
+                raise RuntimeError(
+                    f"pfctl -t {self.table} -T show exited {shown.returncode}: "
+                    f"{shown.stderr.decode('utf-8', 'replace').strip()}"
+                )
+            t_ips = [
+                l.strip()
+                for l in shown.stdout.decode("utf-8", "replace").splitlines()
+                if l.strip()
+            ]
 
             keys = list(self.db.scan_iter(match=f"{self.table}^*", count=500))
             db_ips = [k.decode("utf-8").split("^")[1] for k in keys]
@@ -392,63 +493,7 @@ class PFUI_Firewall(Service):
 
         # Load YAML Configuration
         try:
-            self.cfg = safe_load(open(CONFIG_LOCATION))
-            if "LOGGING" not in self.cfg:
-                self.cfg["LOGGING"] = True
-            if "LOG_LEVEL" not in self.cfg:
-                self.cfg["LOG_LEVEL"] = "DEBUG"
-            if "SOCKET_LISTEN" not in self.cfg:
-                self.cfg["SOCKET_LISTEN"] = "0.0.0.0"
-            if "SOCKET_PROTO" not in self.cfg:
-                self.cfg["SOCKET_PROTO"] = "TCP"
-            if "SOCKET_PORT" not in self.cfg:
-                self.cfg["SOCKET_PORT"] = 10001
-            if "SOCKET_TIMEOUT" not in self.cfg:
-                self.cfg["SOCKET_TIMEOUT"] = 3
-            if "SOCKET_BUFFER" not in self.cfg:
-                self.cfg["SOCKET_BUFFER"] = 1024
-            if "SOCKET_BACKLOG" not in self.cfg:
-                self.cfg["SOCKET_BACKLOG"] = 128
-            if "COMPRESS" not in self.cfg:
-                self.cfg["COMPRESS"] = True
-            if "MAX_WORKERS" not in self.cfg:
-                self.cfg["MAX_WORKERS"] = 32
-            if "ALLOW_INSECURE_UDP" not in self.cfg:
-                self.cfg["ALLOW_INSECURE_UDP"] = False
-            if "REDIS_HOST" not in self.cfg:
-                self.cfg["REDIS_HOST"] = "127.0.0.1"
-            if "REDIS_PORT" not in self.cfg:
-                self.cfg["REDIS_PORT"] = 6379
-            if "REDIS_DB" not in self.cfg:
-                self.cfg["REDIS_DB"] = 0  # Valid range is 0-15
-            if "SCAN_PERIOD" not in self.cfg:
-                self.cfg["SCAN_PERIOD"] = 60
-            if "TTL_MULTIPLIER" not in self.cfg:
-                self.cfg["TTL_MULTIPLIER"] = 2
-            if "CTL" not in self.cfg:
-                self.cfg["CTL"] = "IOCTL"
-            if "DEVPF" not in self.cfg:
-                self.cfg["DEVPF"] = "/dev/pf"
-            if "AF4_TABLE" not in self.cfg:
-                print(
-                    "AF4_TABLE (PF Table) not found in YAML Config File. Please configure. Exiting."
-                )
-                sys.exit(2)
-            if "AF4_FILE" not in self.cfg:
-                print(
-                    "AF4_FILE (PF Persist file) not found in YAML Config File. Please configure. Exiting."
-                )
-                sys.exit(2)
-            if "AF6_TABLE" not in self.cfg:
-                print(
-                    "AF6_TABLE (PF Table) not found in YAML Config File. Please configure. Exiting."
-                )
-                sys.exit(2)
-            if "AF6_FILE" not in self.cfg:
-                print(
-                    "AF6_FILE (PF Persist file) not found in YAML Config File. Please configure. Exiting."
-                )
-                sys.exit(2)
+            self.cfg = load_config()
         except Exception as e:
             print(f"YAML Config File not found or cannot load. {e}")
             sys.exit(2)
@@ -635,6 +680,16 @@ class PFUI_Firewall(Service):
                         self.slots.release()
                         self.logger.exception("PFUIFW: Error in receiver thread")
 
+        else:
+            # Unreachable: __init__ validates SOCKET_PROTO. Kept so that a future
+            # path which sets it after load fails loudly instead of falling
+            # through to the shutdown below and exiting 0 without ever listening
+            self.logger.error(
+                f"PFUIFW: SOCKET_PROTO '{self.cfg['SOCKET_PROTO']}' is not TCP or UDP; "
+                f"nothing was listening."
+            )
+            sys.exit(6)
+
         # Shut down
         self.pool.shutdown(wait=True)
         for t in self.threads:
@@ -714,6 +769,8 @@ class PFUI_Firewall(Service):
         data = None
         if proto == "TCP":
 
+            received = []
+
             def recv_exactly(n):
                 """Read exactly n bytes; None if the peer closed first."""
                 buf = bytearray()
@@ -722,11 +779,16 @@ class PFUI_Firewall(Service):
                     if not chunk:
                         return None
                     buf += chunk
+                received.append(len(buf))
                 return bytes(buf)
 
             try:
                 data = read_frame(recv_exactly, compress=self.cfg["COMPRESS"])
-                if data is None:
+                if data is None and not received:
+                    # read_frame returns None when no header arrived at all, which
+                    # PROTOCOL.md makes a non-error. A payload of JSON null also
+                    # decodes to None, and calling that an empty payload was
+                    # wrong: it falls through to the shape check below instead
                     self.logger.error(
                         f"PFUIFW: Empty payload, disconnecting {ip}:{port}"
                     )
@@ -735,6 +797,21 @@ class PFUI_Firewall(Service):
             except socket_timeout:
                 self.logger.error(f"PFUIFW: Socket recv timeout {ip}:{port}")
                 disconnect(proto, self.soc, conn, msg="Socket timeout")
+                return
+            except BadLength as e:
+                # Reported separately from a truncated payload, as PROTOCOL.md
+                # documents and server-c already distinguishes: a bad prefix is
+                # a different diagnosis from a sender that under-delivered
+                self.logger.error(
+                    f"PFUIFW: Bad frame length from {ip}:{port}, disconnecting. {e}"
+                )
+                disconnect(proto, self.soc, conn, msg="Bad length")
+                return
+            except Truncated as e:
+                self.logger.error(
+                    f"PFUIFW: Truncated payload from {ip}:{port}, disconnecting. {e}"
+                )
+                disconnect(proto, self.soc, conn, msg="Truncated")
                 return
             except WireError as e:
                 self.logger.error(
@@ -766,9 +843,20 @@ class PFUI_Firewall(Service):
             self.logger.info(f"PFUIFW: Received {data} from {ip}:{port} ({proto})")
 
         # Input Request
+        # Shape first, then contents: a non-dict payload has no 'kind' to be
+        # missing, and reporting one as a version skew sent the wrong operator
+        # down the wrong path
         af4_data, af6_data = [], []
-        kind = data.get("kind") if isinstance(data, dict) else None
-        qname = data.get("qname", "") if isinstance(data, dict) else ""
+        if not isinstance(data, dict):
+            self.logger.error(
+                f"PFUIFW: Message decoded to {type(data).__name__}, not a PFUI "
+                f"object. Dropping. Non-PFUI_Unbound sender ?"
+            )
+            disconnect(proto, self.soc, conn, msg="Invalid datatype")
+            return False
+
+        kind = data.get("kind")
+        qname = data.get("qname", "")
         if kind not in ("rr", "cache"):
             self.logger.error(
                 f"PFUIFW: Message has no valid 'kind' ({kind}), dropping. "
@@ -776,24 +864,20 @@ class PFUI_Firewall(Service):
             )
             disconnect(proto, self.soc, conn, msg="Missing kind")
             return False
-        if isinstance(data, dict):
-            try:
-                af4_data = extract(data.get("AF4"), version=4)
-                af6_data = extract(data.get("AF6"), version=6)
-            except Exception:
-                self.logger.exception(
-                    f"PFUIFW: Cannot extract PFUI record from data '{data}' {type(data)}"
-                )
-        else:
-            self.logger.error(f"PFUIFW: No data in message. Dropping message")
-            disconnect(proto, self.soc, conn, msg="No data")
-            return False
+
+        try:
+            af4_data = extract(data.get("AF4"), version=4)
+            af6_data = extract(data.get("AF6"), version=6)
+        except Exception:
+            self.logger.exception(
+                f"PFUIFW: Cannot extract PFUI record from data '{data}' {type(data)}"
+            )
 
         if not af4_data and not af6_data:
             self.logger.error(
-                f"PFUIFW: Invalid datatype received {data} {type(data)}. Non-PFUI_Unbound datagram ?"
+                f"PFUIFW: No routable records in {data}. Nothing to act on."
             )
-            disconnect(proto, self.soc, conn, msg="Invalid datatype")
+            disconnect(proto, self.soc, conn, msg="No records")
             return False
 
         if proto == "UDP":

@@ -63,7 +63,10 @@ def test_prepare_conn_disables_nagle(accepted):
     which is not guaranteed across platforms."""
     accepted.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 0)
     Daemon()._prepare_conn(accepted)
-    assert accepted.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY) == 1
+    # Any non-zero value means the option is on. The kernel is free to report
+    # its own flag bits rather than the 1 that was set: Darwin returns 4, so
+    # asserting equality made this suite red everywhere but Linux
+    assert accepted.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY) != 0
 
 
 def test_stalled_peer_hits_the_timeout_instead_of_blocking(accepted):

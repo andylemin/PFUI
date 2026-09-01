@@ -19,6 +19,19 @@ class WireError(Exception):
     """A frame could not be decoded, or exceeded MAX_MESSAGE."""
 
 
+class BadLength(WireError):
+    """The declared payload length is zero or above MAX_MESSAGE.
+
+    Distinct from Truncated so a receiver can send the distinct refusal
+    PROTOCOL.md documents, and to match the C implementation's
+    PFUI_BAD_LENGTH / PFUI_TRUNCATED, which the shared vectors also separate.
+    """
+
+
+class Truncated(WireError):
+    """The header was complete but the payload stopped short of it."""
+
+
 def encode_payload(msg: dict, compress: bool = True) -> bytes:
     """Serialise one PFUI message, unframed. UDP datagrams are self-delimiting
     and carry the payload alone; only the TCP stream needs a length prefix.
@@ -65,18 +78,18 @@ def decode(payload: bytes, compress: bool = True) -> dict:
 def read_frame(recv_exactly, compress: bool = True):
     """Read one frame using `recv_exactly(n) -> bytes | None`.
 
-    Returns None when the peer closed before sending a header; raises WireError
-    on a bad length or a truncated payload.
+    Returns None when the peer closed before sending a header; raises BadLength
+    or Truncated (both WireError) so a caller can report which it was.
     """
     header = recv_exactly(HEADER.size)
     if header is None:
         return None
     (length,) = HEADER.unpack(header)
     if not 0 < length <= MAX_MESSAGE:
-        raise WireError(f"declared length {length} out of range")
+        raise BadLength(f"declared length {length} out of range")
     payload = recv_exactly(length)
     if payload is None:
-        raise WireError(f"truncated payload, expected {length} bytes")
+        raise Truncated(f"truncated payload, expected {length} bytes")
     return decode(payload, compress=compress)
 
 

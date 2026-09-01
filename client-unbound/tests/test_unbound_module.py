@@ -14,10 +14,14 @@ neither Unbound's injected symbols nor its config to load.
 
 import importlib.util
 import inspect
+import socket
 import sys
+import time
 from pathlib import Path
+from threading import Thread
 
 import pytest
+import yaml
 
 COMPONENT = Path(__file__).resolve().parent.parent
 
@@ -226,6 +230,318 @@ def test_zero_udp_retry_does_not_raise(plugin):
             raise AssertionError("must not transmit when retry is 0")
 
     assert plugin.udp_transmit(Soc(), b"x", "127.0.0.1", 10001, retry=0) is None
+
+
+def test_shipped_config_needs_no_defaults(plugin):
+    """Every key load_config defaults must also be a key the shipped yml sets or
+    deliberately omits, so the example config and the code cannot drift."""
+    shipped = yaml.safe_load((COMPONENT / "pfui_unbound.yml").read_text())
+    cfg = plugin.load_config(COMPONENT / "pfui_unbound.yml")
+    for key in plugin.CONFIG_DEFAULTS:
+        assert key in cfg
+    assert cfg["FIREWALLS"] == shipped["FIREWALLS"]
+
+
+def test_every_key_read_at_runtime_has_a_default(plugin, tmp_path):
+    """A config predating an option must load. Each of these keys is read on the
+    query path, where a KeyError surfaces per lookup rather than at start."""
+    minimal = tmp_path / "pfui_unbound.yml"
+    minimal.write_text("--- # Yaml\nFIREWALLS:\n  - HOST: 127.0.0.1\n")
+    cfg = plugin.load_config(minimal)
+    for key in (
+        "LOGGING",
+        "LOG_LEVEL",
+        "COMPRESS",
+        "SOCKET_PROTO",
+        "SOCKET_TIMEOUT",
+        "BLOCKING",
+        "UDP_RETRY",
+        "UDP_ACK_TIMEOUT",
+        "BREAKER_FAILURES",
+        "BREAKER_COOLOFF",
+        "DEFAULT_PORT",
+    ):
+        assert key in cfg, f"{key} is read at runtime but has no default"
+
+
+def test_empty_config_file_loads(plugin, tmp_path):
+    """safe_load returns None for an empty document, which used to be indexed."""
+    empty = tmp_path / "pfui_unbound.yml"
+    empty.write_text("")
+    assert plugin.load_config(empty)["FIREWALLS"] == []
+
+
+def test_socket_proto_is_normalised_and_validated(plugin, tmp_path):
+    """The transmit path matches on the exact string, so an unrecognised value
+    would send nothing at all while the resolver looked healthy."""
+    cfg = tmp_path / "pfui_unbound.yml"
+    cfg.write_text("--- # Yaml\nSOCKET_PROTO: ' tcp '\n")
+    assert plugin.load_config(cfg)["SOCKET_PROTO"] == "TCP"
+
+    cfg.write_text("--- # Yaml\nSOCKET_PROTO: SCTP\n")
+    with pytest.raises(ValueError):
+        plugin.load_config(cfg)
+
+
+def test_moddone_completes_with_a_config_that_omits_optional_keys(plugin, tmp_path):
+    """The failure this guards: a missing key raised KeyError inside operate(),
+    before ext_state was set, so Unbound never learned the module had finished."""
+    minimal = tmp_path / "pfui_unbound.yml"
+    minimal.write_text("--- # Yaml\nFIREWALLS: []\n")
+    plugin.pfui_cfg = plugin.load_config(minimal)
+
+    class QState:
+        return_msg = None
+        ext_state = {}
+
+    qstate = QState()
+    assert plugin.operate(0, plugin.MODULE_EVENT_MODDONE, qstate, None) is True
+    assert qstate.ext_state[0] == plugin.MODULE_FINISHED
+
+
+def test_logger_does_not_print_signature_bytes_as_an_address(plugin):
+    """The debug dump had the same defect read_rr was fixed for: it read every
+    record's trailing bytes as an address, so a signed answer printed an IPv4
+    line that no nameserver ever sent."""
+    printed = []
+    plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": "DEBUG"}
+    plugin.log_info = lambda msg="": printed.append(str(msg))
+
+    class FakeData:
+        count = 1
+        rrsig_count = 1
+        rr_ttl = [3600, 3600]
+        rr_data = [
+            b"\x00\x04" + bytes([8, 8, 8, 8]),
+            b"\x00\x88" + bytes([136, 137, 138, 139]),  # signature rdata
+        ]
+
+    class FakeKey:
+        dname_list, dname_str, flags = [], "signed.example.com.", 0
+        type_str, rrset_class_str = "A", "IN"
+        type = rrset_class = 1
+
+    class FakeRRset:
+        rk = FakeKey()
+
+        class entry:
+            data = FakeData()
+
+    class FakeRep:
+        flags = qdcount = security = ttl = 0
+        rrset_count = 1
+        rrsets = [FakeRRset()]
+        qinfo = FakeKey()
+
+    class QInfo:
+        qname_str, qtype_str, qclass_str = "signed.example.com.", "A", "IN"
+        qname_list = []
+        qtype = qclass = 1
+
+    class QState:
+        qinfo = QInfo()
+
+        class return_msg:
+            rep = FakeRep()
+            qinfo = QInfo()
+
+    try:
+        plugin.logger(QState())
+    finally:
+        plugin.log_info = INJECTED["log_info"]
+
+    addresses = [line for line in printed if line.startswith("IPv4:")]
+    assert addresses == ["IPv4: 8.8.8.8"], f"signature bytes printed as {addresses}"
+
+
+class AckServer:
+    """Loopback stand-in for PFUI_Firewall. `reply=None` accepts the connection
+    and then says nothing, which is the case that used to look like success."""
+
+    def __init__(self, reply=b"ACKUPDATE", connections=4):
+        self.listener = socket.socket()
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        self.reply = reply
+        self.received = []
+        self._held = []
+        self._thread = Thread(target=self._serve, args=(connections,), daemon=True)
+        self._thread.start()
+
+    def _serve(self, connections):
+        for _ in range(connections):
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            self.received.append(conn.recv(65536))
+            if self.reply is None:
+                self._held.append(conn)  # Never reply, never close
+            else:
+                conn.sendall(self.reply)
+                conn.close()
+
+    def close(self):
+        self.listener.close()
+        for conn in self._held:
+            conn.close()
+
+
+@pytest.fixture
+def breaker_cfg(plugin):
+    plugin.pfui_cfg = {
+        "LOGGING": False,
+        "LOG_LEVEL": "ERROR",
+        "COMPRESS": False,
+        "SOCKET_PROTO": "TCP",
+        "SOCKET_TIMEOUT": 0.25,
+        "BLOCKING": True,
+        "BREAKER_FAILURES": 2,
+        "BREAKER_COOLOFF": 30,
+        "DEFAULT_PORT": 10001,
+        "FIREWALLS": [],
+    }
+    plugin._breakers.clear()
+    yield plugin.pfui_cfg
+    plugin._breakers.clear()
+
+
+def queries(plugin, count):
+    """Drive `count` whole queries through transmit_all.
+
+    Deliberately not calling the transmit functions directly: transmit_all
+    consults the breaker before each attempt, and it was that consultation which
+    used to reset the failure count, so a test that skips it cannot see the
+    breaker fail to trip.
+    """
+    for _ in range(count):
+        plugin.transmit_all({"kind": "rr", "qname": "a.", "AF4": [], "AF6": []})
+
+
+def test_breaker_opens_when_the_firewall_never_acknowledges(plugin, breaker_cfg):
+    """Recording success at sendall meant a firewall that accepted the connection
+    and never replied looked healthy forever, so the breaker never opened and
+    every query paid SOCKET_TIMEOUT in full."""
+    server = AckServer(reply=None, connections=4)
+    breaker_cfg["FIREWALLS"] = [{"HOST": "127.0.0.1", "PORT": server.port}]
+    try:
+        queries(plugin, 2)  # BREAKER_FAILURES
+        assert plugin.breaker_open("127.0.0.1", server.port)
+    finally:
+        server.close()
+
+
+def test_breaker_counts_across_queries_rather_than_resetting(plugin, breaker_cfg):
+    """The count has to survive the breaker being consulted. While it did not, a
+    threshold above 1 could never be reached and the breaker was inert."""
+    server = AckServer(reply=None, connections=4)
+    breaker_cfg["BREAKER_FAILURES"] = 3
+    breaker_cfg["FIREWALLS"] = [{"HOST": "127.0.0.1", "PORT": server.port}]
+    key = ("127.0.0.1", server.port)
+    try:
+        queries(plugin, 1)
+        assert plugin._breakers[key][0] == 1
+        assert not plugin.breaker_open(*key)
+        queries(plugin, 1)
+        assert plugin._breakers[key][0] == 2, "the failure count was reset"
+        assert not plugin.breaker_open(*key)
+        queries(plugin, 1)
+        assert plugin.breaker_open(*key), "three failures did not trip a threshold of 3"
+    finally:
+        server.close()
+
+
+def test_a_tripped_breaker_stops_further_attempts(plugin, breaker_cfg):
+    """The point of the breaker: an unreachable firewall stops costing the
+    resolver a timeout per query."""
+    server = AckServer(reply=None, connections=8)
+    breaker_cfg["FIREWALLS"] = [{"HOST": "127.0.0.1", "PORT": server.port}]
+    try:
+        queries(plugin, 2)  # Trips it
+        connected = len(server.received)
+        queries(plugin, 3)  # Must all be skipped
+        assert len(server.received) == connected, "kept connecting once tripped"
+    finally:
+        server.close()
+
+
+def test_breaker_reopens_for_a_probe_once_the_cooloff_elapses(plugin, breaker_cfg):
+    server = AckServer(reply=None, connections=8)
+    breaker_cfg["BREAKER_COOLOFF"] = 0.5
+    breaker_cfg["FIREWALLS"] = [{"HOST": "127.0.0.1", "PORT": server.port}]
+    key = ("127.0.0.1", server.port)
+    try:
+        queries(plugin, 2)
+        assert plugin.breaker_open(*key)
+        time.sleep(0.75)
+        assert not plugin.breaker_open(*key), "never probed again after the cool-off"
+        assert plugin._breakers[key][0] == 0, "the count was not cleared for the probe"
+    finally:
+        server.close()
+
+
+def test_breaker_stays_closed_when_the_firewall_acknowledges(plugin, breaker_cfg):
+    server = AckServer(reply=b"ACKUPDATE", connections=4)
+    breaker_cfg["FIREWALLS"] = [{"HOST": "127.0.0.1", "PORT": server.port}]
+    try:
+        queries(plugin, 3)
+        assert not plugin.breaker_open("127.0.0.1", server.port)
+        assert len(server.received) == 3
+    finally:
+        server.close()
+
+
+def test_breaker_opens_on_a_refusal(plugin, breaker_cfg):
+    """A reachable firewall that refuses every message is not doing its job, and
+    PF denies the traffic either way."""
+    server = AckServer(reply=b"Missing kind", connections=4)
+    breaker_cfg["FIREWALLS"] = [{"HOST": "127.0.0.1", "PORT": server.port}]
+    try:
+        queries(plugin, 2)
+        assert plugin.breaker_open("127.0.0.1", server.port)
+    finally:
+        server.close()
+
+
+def test_payload_is_encoded_once_for_all_firewalls(plugin, breaker_cfg):
+    """encode_payload ran per firewall inside the loop, so a CARP pair paid for
+    two lz4 passes over identical bytes on the blocking DNS path."""
+    calls = []
+    real_encode = plugin.encode_payload
+    plugin.encode_payload = lambda msg, compress=True: (
+        calls.append(msg) or real_encode(msg, compress=compress)
+    )
+    sent = []
+    real_tcp = plugin.tcp_transmit_close  # Restored, not deleted: a del here would
+    # remove the module's own function and break every later test
+    plugin.tcp_transmit_close = lambda data, ip, port, blocking: sent.append((ip, port))
+    breaker_cfg["FIREWALLS"] = [
+        {"HOST": "127.0.0.1", "PORT": 10001},
+        {"HOST": "127.0.0.2", "PORT": 10001},
+    ]
+    try:
+        plugin.transmit_all({"kind": "rr", "qname": "a.", "AF4": [], "AF6": []})
+    finally:
+        plugin.encode_payload = real_encode
+        plugin.tcp_transmit_close = real_tcp
+
+    assert len(sent) == 2, "both firewalls must still be told"
+    assert len(calls) == 1, f"payload encoded {len(calls)} times for 2 firewalls"
+
+
+def test_nothing_is_encoded_when_there_is_no_firewall_to_send_to(plugin, breaker_cfg):
+    calls = []
+    real_encode = plugin.encode_payload
+    plugin.encode_payload = lambda msg, compress=True: (
+        calls.append(msg) or real_encode(msg, compress=compress)
+    )
+    try:
+        plugin.transmit_all({"kind": "rr", "qname": "a.", "AF4": [], "AF6": []})
+    finally:
+        plugin.encode_payload = real_encode
+    assert calls == []
 
 
 def test_unknown_event_sets_module_error_even_if_logging_fails(plugin):
