@@ -83,10 +83,25 @@ pkg_add -i swig git bash cmake libconfig libiconv bison gawk mawk
 python3 -m pip install -r ./client-unbound/requirements.txt
 
 ### PFUI_Unbound - Download Unbound source
+Clone the release you mean to build, rather than the default branch. `--branch`
+accepts a tag, so a single-commit clone lands directly on it; cloning shallowly
+and then checking out another ref does not work, because `--depth` implies
+`--single-branch`.
 ```
-git clone --depth 20 https://github.com/NLnetLabs/unbound.git /tmp/unbound
-# --depth 20 helps with shallow clone errors
+# The tag the installer would resolve, newest release first
+git ls-remote --tags --refs https://github.com/NLnetLabs/unbound.git 'release-*' \
+  | sed 's#.*refs/tags/##' | grep -E '^release-[0-9.]+$' | sort -t. -k2,2n -k3,3n | tail -1
+
+git clone --depth 1 --branch release-1.26.0 https://github.com/NLnetLabs/unbound.git /tmp/unbound
 ```
+`client-unbound/tools/unbound_release.sh` does this resolution for the installer,
+and prints the ref it picked:
+```
+./client-unbound/tools/unbound_release.sh          # latest release tag
+./client-unbound/tools/unbound_release.sh master   # passes through unchanged
+```
+Note that `release-*` tags are permanent but the `branch-*` heads are not: NLnet
+Labs prunes them, and nothing before 1.23 still exists.
 
 #### Default Unbound build options in OpenBSD port, `unbound -V` (ref only);
 ```

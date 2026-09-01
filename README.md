@@ -91,8 +91,20 @@ adds latency). A fully recursive DNS query can take tens to hundreds of millisec
 
 ------
 ## PFUI Installation
-Tested from OpenBSD 7.0, Unbound 1.16, Python 3.8,
-up to OpenBSD 7.4, Unbound 1.18, Python 3.10
+Tested on OpenBSD from 7.0 (Unbound 1.16, Python 3.8) to 7.4 (Unbound 1.18, Python 3.10).
+
+`install-client-unbound.sh` builds the **latest Unbound release** by default: it
+resolves the newest `release-*` tag from NLnet Labs at install time rather than
+carrying a version in the script. Every release from 1.23 onwards is a candidate,
+so pin one if you need a known build:
+
+```
+UNBOUND_VERSION=release-1.25.2 doas ./install-client-unbound.sh   # a specific release
+UNBOUND_VERSION=master         doas ./install-client-unbound.sh   # upstream head
+```
+
+Unbound 1.26.0 with `--with-pythonmodule` is built and exercised on every commit;
+see [Tests](#tests).
 
 ### 1) Install PFUI_Firewall on OpenBSD PF Firewall(s)
 ```
@@ -223,6 +235,29 @@ Jordan's unbound-adblock installation guide for reference;\
 https://www.geoghegan.ca/pub/unbound-adblock/latest/install/openbsd.txt \
 https://www.geoghegan.ca/pub/pf-badhost/latest/man/man.txt
 
+------
+<a name="tests"></a>
+### Tests;
+
+```
+pytest                                        # protocol, client and server suites
+make -C server-c test                         # the C framing against the shared vectors
+./client-unbound/tests/container/run.sh       # builds Unbound and runs PFUI_Unbound in it
+```
+
+The PF ioctl suites skip unless they are run on OpenBSD, and
+`client-unbound/tests/test_unbound*.py`'s live cases skip unless `PFUI_FW_HOST`
+points at a running PFUI_Firewall.
+
+The container is the one test that builds Unbound from source with
+`--with-pythonmodule` and runs the real resolver against a local authoritative
+server and a stub firewall. No distribution packages Unbound with the Python
+module, so that build is PFUI's alone, and pythonmod API drift in a new Unbound
+release would otherwise only show up when someone ran the installer. It takes a
+few minutes and needs Docker; nothing runs on the host. CI runs it against the
+latest release, and against upstream `master` for information only.
+
+------
 ------
 ### Compatibility;
 

@@ -31,6 +31,51 @@ caching past the TTL), rather than inheriting a hidden minimum. The Redis
 floored at one second, because Redis treats `EXPIRE 0` (or negative) as "delete
 now".
 
+## Unbound is built from a release tag, resolved at install time
+
+`install-client-unbound.sh` asks NLnet Labs for its newest `release-*` tag rather
+than carrying a version. Three things follow from that choice:
+
+Tags, not branches. The `branch-<version>` heads are pruned upstream (nothing
+before 1.23 survives), so a version named in the script goes stale and then
+vanishes. Release tags are permanent.
+
+`git ls-remote`, not the GitHub releases API. It needs no token, has no rate
+limit, and uses the git the installer already requires. The API would also depend
+on a release being marked "latest" by hand.
+
+Git, not the signed release tarball. The tarball is PGP-signed, which the clone
+is not, and that is a real gap. It stays a clone because the OpenBSD build needs
+`Makefile.bsd-wrapper` dropped into a source tree, and because `configure` is
+committed upstream so no autoreconf is needed. Verifying the source is worth
+doing and is not done here.
+
+## The Unbound build is tested in a Linux container
+
+`client-unbound/tests/container/` builds Unbound with `--with-pythonmodule` and
+runs PFUI_Unbound inside it, on Debian. It cannot prove the OpenBSD build, and it
+is not trying to: what it protects is the pythonmod interface. No distribution
+ships Unbound with the Python module, so PFUI is the only consumer of that build,
+and an upstream API change used to surface as an operator's install failing.
+
+Two things it caught immediately, both of which the OpenBSD installer gets from
+base and would not have revealed: building from the git tree needs flex and
+bison, and `configure --with-pythonmodule` looks for `python`, not `python3`.
+
+It also settles what the TTL labelling in `read_rr` rests on: against 1.26.0 and
+against `master`, the reply path reports a relative TTL and the cache path an
+absolute unix timestamp, so `kind` means what `PROTOCOL.md` says it means. That
+was previously an assumption.
+
+## UDP has a message-size ceiling
+
+`UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a
+buffer that wants raising: a datagram above the link MTU fragments and PF
+commonly drops fragments, so UDP cannot carry the large answers TCP handles. A
+message above the ceiling is logged and dropped rather than truncated silently.
+Accepted because UDP is lab-only and gated behind `ALLOW_INSECURE_UDP`; the fix
+for a real deployment is TCP.
+
 ## UDP has a message-size ceiling
 
 `UDP_DGRAM_CEILING` (1400 bytes) bounds a PFUI message over UDP. This is not a

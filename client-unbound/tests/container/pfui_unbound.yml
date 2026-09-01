@@ -1,0 +1,18 @@
+--- # Yaml
+
+# PFUI_Unbound configuration for the build-and-run test container.
+# The stub PFUI_Firewall verify.py starts listens on 127.0.0.1:10001.
+
+# DEBUG so the container also exercises the RR debug dump, which runs only at
+# this level and is therefore never covered by an ordinary deployment
+LOGGING: True
+LOG_LEVEL: DEBUG
+
+SOCKET_TIMEOUT: 3
+COMPRESS: True         # Exercises the lz4 path, as a production install does
+BLOCKING: True         # The resolver waits for the stub's ACKUPDATE
+
+DEFAULT_PORT: 10001
+FIREWALLS:
+  - HOST: 127.0.0.1
+    PORT: 10001
