@@ -74,7 +74,9 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo
   echo "PFUIDNS: Installing Package Dependencies"
-  pkg_add -i swig git bash cmake libconfig libiconv bison gawk mawk m4 gettext-runtime gettext-tools py3-openssl curl
+  # No cmake: Unbound builds with autotools, and asking for it aborts this
+  # checked block on any host where the cmake package conflicts
+  pkg_add -i swig git bash libconfig libiconv bison gawk mawk m4 gettext-runtime gettext-tools py3-openssl curl
   retval="$?"
   if [ $retval -ne 0 ]; then
     echo "* Errors trying to install common dependencies. Please resolve and restart pfui_unbound_install.sh"
@@ -146,10 +148,23 @@ fi
 
 echo
 echo "PFUIDNS: Installing PFUI Python dependencies"
-# The resolver runs unchrooted (chroot: "" in pfui_unbound.conf), so the module
-# imports these from the system interpreter's site-packages
-python3 -m pip install -r "${DIR}/client-unbound/requirements.txt" \
-  || die "cannot install Python dependencies"
+# The resolver runs unchrooted (chroot: "" in pfui_unbound.conf) and imports
+# these through its embedded interpreter, which is the system one, so they have
+# to be installed for that interpreter rather than into a virtualenv.
+#
+# On OpenBSD that means packages: the system interpreter is externally managed
+# (PEP 668) and pip refuses to write to it.
+if [[ "$OS" = "OpenBSD" ]]; then
+  # -I: an interactive pkg_add here would consume the next prompt's answer
+  pkg_add -I py3-lz4 py3-yaml || die "cannot install py3-lz4 and py3-yaml"
+else
+  python3 -m pip install -r "${DIR}/client-unbound/requirements.txt" \
+    || die "cannot install Python dependencies"
+fi
+# The interpreter the resolver embeds must be able to import these, or the
+# module fails at resolver start
+python3 -c "import lz4.frame, yaml" \
+  || die "lz4 and yaml are not importable by $(command -v python3)"
 
 if [[ "$OS" = "OpenBSD" ]]; then
   if [ ! -d "${TARGET}" ]; then
