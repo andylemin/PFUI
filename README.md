@@ -25,9 +25,11 @@ Ie, Users cannot bypass an administrator's DNS blocking attempts using 'DNS over
 | [protocol/](protocol/) | The wire protocol: specification, conformance vectors, and the Python reference implementation shared by clients and servers |
 | [client-unbound/](client-unbound/) | PFUI client as an Unbound pythonmod plugin |
 | [server-python/](server-python/) | PFUI server for OpenBSD PF, in Python |
+| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon. Functionally complete; OpenBSD live validation pending |
 | [server-c/](server-c/) | PFUI server in C. Framing only so far |
 | `install-client-unbound.sh` | Installs the Unbound client on a resolver |
 | `install-server-python.sh` | Installs the Python server on a PF firewall |
+| `install-server-rust.sh` | Installs the Rust server on a PF firewall (builds with the ports rustc) |
 | [examples/pf.conf](examples/pf.conf) | Example PF ruleset, applies to any server implementation |
 
 Clients and servers share only the protocol. Adding support for another resolver

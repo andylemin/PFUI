@@ -1,0 +1,30 @@
+--- # Yaml
+
+# PFUI_Firewall configuration for the end-to-end container. Both listeners
+# at once — the CARP-node arrangement — so the resolver's SOCKET entry and
+# its HOST entry both land on this one daemon.
+
+LOGGING: False
+LOG_LEVEL: ERROR
+
+SOCKET_LISTEN: 127.0.0.1
+SOCKET_PROTO: TCP
+SOCKET_PORT: 10001
+SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
+SOCKET_UNIX_GROUP: _pfui
+SOCKET_TIMEOUT: 3
+COMPRESS: True          # The client compresses; this exercises python-lz4 -> lz4_flex live
+MAX_WORKERS: 8
+
+REDIS_HOST: 127.0.0.1
+REDIS_PORT: 6379
+REDIS_DB: 0
+SCAN_PERIOD: 5          # Short enough that the sync loop runs during the test
+TTL_MULTIPLIER: 4
+
+CTL: PFCTL              # Linux has no /dev/pf; /sbin/pfctl is the stateful stub
+DEVPF: /dev/pf
+AF4_TABLE: pfui_ipv4_domains
+AF4_FILE: /tmp/pfui_ipv4_domains
+AF6_TABLE: pfui_ipv6_domains
+AF6_FILE: /tmp/pfui_ipv6_domains
