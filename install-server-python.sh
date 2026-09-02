@@ -123,22 +123,32 @@ if [[ "$OS" = "OpenBSD" ]]; then
   install -d -o _pfui_firewall -g _pfui -m 750 /var/run/pfui \
     || die "cannot create /var/run/pfui"
 
-  echo "PFUIFW: Updating Persist files /var/spool/pfui/pfui_ipv<*>_domains"
+  PERSIST_DIR=/var/db/pfui
+  echo "PFUIFW: Persist files in ${PERSIST_DIR}"
   # Daemon-owned directory: file_push/file_pop need to create a .lock sidecar and
-  # mkstemp here. pfctl reads the files as root, so no world access is needed.
-  install -d -o _pfui_firewall -g _pfui_firewall -m 750 /var/spool/pfui \
-    || die "cannot create /var/spool/pfui"
-  for f in pfui_ipv4_domains pfui_ipv6_domains; do
-    if [ -f "/var/spool/${f}" ] && [ ! -f "/var/spool/pfui/${f}" ]; then
-      echo "PFUIFW: Migrating existing /var/spool/${f} to /var/spool/pfui/${f}"
-      mv "/var/spool/${f}" "/var/spool/pfui/${f}"
+  # rename a tempfile over the persist file, so the directory itself must be
+  # writable, not just the files. pfctl reads them as root, so no world access.
+  install -d -o _pfui_firewall -g _pfui_firewall -m 750 "${PERSIST_DIR}" \
+    || die "cannot create ${PERSIST_DIR}"
+  for af in ipv4 ipv6; do
+    new="${PERSIST_DIR}/${af}_domains"
+    # An existing file from an earlier layout is COPIED, never moved: pf.conf
+    # loads its tables from whatever path it names, and moving the file out from
+    # under it breaks the next ruleset load
+    if [ ! -f "${new}" ]; then
+      for old in "/var/spool/pfui/pfui_${af}_domains" "/var/spool/pfui_${af}_domains"; do
+        if [ -f "${old}" ]; then
+          echo "PFUIFW: Seeding ${new} from ${old} (${old} is left in place)"
+          cp "${old}" "${new}"
+          break
+        fi
+      done
     fi
-    [ -f "/var/spool/pfui/${f}" ] || install -o _pfui_firewall -g _pfui_firewall -m 640 \
-      /dev/null "/var/spool/pfui/${f}"
-    chown _pfui_firewall:_pfui_firewall "/var/spool/pfui/${f}"
-    chmod 640 "/var/spool/pfui/${f}"
+    [ -f "${new}" ] || install -o _pfui_firewall -g _pfui_firewall -m 640 /dev/null "${new}"
+    chown _pfui_firewall:_pfui_firewall "${new}"
+    chmod 640 "${new}"
   done
-  echo "PFUIFW: NOTE update pf.conf 'persist file' paths to /var/spool/pfui/ (see /etc/pf-pfui-example.conf)"
+  echo "PFUIFW: NOTE point pf.conf 'persist file' paths at ${PERSIST_DIR}/ipv{4,6}_domains (see /etc/pf-pfui-example.conf)"
 fi
 
 if [[ $err != 0 ]]; then

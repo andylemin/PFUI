@@ -48,6 +48,6 @@ TTL_MULTIPLIER: 4             # Expire entries after RR TTL * TTL_MULTIPLIER (Br
 CTL: IOCTL                    # IOCTL = ioctl kernel interface (recommended, requires DEVPF), PFCTL = pfctl cli interface
 DEVPF: /dev/pf                # PF ioctl interface
 AF4_TABLE: pfui_ipv4_domains            # IPv4 PF Table
-AF4_FILE: /var/spool/pfui/pfui_ipv4_domains  # IPv4 PF Persist file - Used during PF reload
+AF4_FILE: /var/db/pfui/ipv4_domains  # IPv4 PF Persist file - Used during PF reload
 AF6_TABLE: pfui_ipv6_domains            # IPv6 PF Table
-AF6_FILE: /var/spool/pfui/pfui_ipv6_domains  # IPv6 PF Persist file - Used during PF reload
+AF6_FILE: /var/db/pfui/ipv6_domains  # IPv6 PF Persist file - Used during PF reload

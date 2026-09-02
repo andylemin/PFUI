@@ -32,8 +32,8 @@ neither, or with no `kind`, is treated as malformed and purged on the next scan.
 #### Check the PF persist files
 These live in a daemon-owned directory, and are written by the daemon user only.
 ```
-fw1# ls -l /var/spool/pfui/
-fw1# tail /var/spool/pfui/pfui_ipv4_domains
+fw1# ls -l /var/db/pfui/
+fw1# tail /var/db/pfui/ipv4_domains
 ```
 Duplicate lines here are expected between scans: the per-query path appends
 without reading the file, and the periodic sync rewrite de-duplicates it.
