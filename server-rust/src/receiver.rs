@@ -263,7 +263,8 @@ fn handle_stream(_kind: StreamKind, conn: &mut dyn Stream, peer: &str, ctx: &Ctx
                 ReadError::Wire(WireError::Truncated { .. }) => Refusal::Truncated,
                 ReadError::Wire(WireError::DecompressUnfinished) => Refusal::BadFrame,
                 ReadError::Wire(WireError::DecompressCorrupt(_))
-                | ReadError::Wire(WireError::Json(_)) => Refusal::FailedToDecode,
+                | ReadError::Wire(WireError::Json(_))
+                | ReadError::Wire(WireError::CompressMismatch { .. }) => Refusal::FailedToDecode,
             };
             ctx.log
                 .error(&format!("{e}; disconnecting {peer} ({})", refusal.as_str()));

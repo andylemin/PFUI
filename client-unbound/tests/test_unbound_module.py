@@ -883,3 +883,21 @@ def test_an_acknowledgement_split_in_transit_is_still_read(plugin):
         assert plugin._breakers[f"{host}:{port}"][0] == 0
     finally:
         listener.close()
+
+
+def test_a_refusal_is_logged_with_what_it_means(plugin):
+    """A COMPRESS mismatch is the one fault not signalled on the wire, so it can
+    only reach the operator as a refusal; the log has to say what it means."""
+    detail = plugin.refusal_detail(b"Failed to decode")
+    assert "COMPRESS" in detail
+    assert "Failed to decode" in detail
+    # An unknown reply is still reported, just without advice
+    assert plugin.refusal_detail(b"something new") == repr(b"something new")
+
+
+def test_every_hint_names_a_documented_refusal(plugin):
+    """The reply strings are fixed by the protocol; a hint for one that does not
+    exist would be advice nobody ever sees."""
+    protocol = (COMPONENT.parent / "protocol" / "PROTOCOL.md").read_text()
+    for reply in plugin.REFUSAL_HINTS:
+        assert f"`{reply.decode()}`" in protocol, reply
