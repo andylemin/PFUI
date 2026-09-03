@@ -25,7 +25,7 @@ Ie, Users cannot bypass an administrator's DNS blocking attempts using 'DNS over
 | [protocol/](protocol/) | The wire protocol: specification, conformance vectors, and the Python reference implementation shared by clients and servers |
 | [client-unbound/](client-unbound/) | PFUI client as an Unbound pythonmod plugin |
 | [server-python/](server-python/) | PFUI server for OpenBSD PF, in Python |
-| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon. Functionally complete; OpenBSD live validation pending |
+| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon, validated on OpenBSD 7.9 against a live resolver and PF |
 | [server-c/](server-c/) | PFUI server in C. Framing only so far |
 | `install-client-unbound.sh` | Installs the Unbound client on a resolver |
 | `install-server-python.sh` | Installs the Python server on a PF firewall |
@@ -43,7 +43,7 @@ means a new `client-<resolver>/`; a second server implementation means a new
 **"PFUI_Unbound"** - A Python3 module for [Unbound](https://nlnetlabs.nl/projects/unbound/about/) DNS resolvers;
 Installed on Unbound DNS servers, forwards successful/permitted DNS responses (IPs & TTLs) to all "PFUI_Firewall" instances (Eg CARP Pair).
 
-**"PFUI_Firewall"** - A Python3 daemon service; Installed on OpenBSD PF firewalls, receives messages from 
+**"PFUI_Firewall"** - A daemon service, in Rust by default or Python; Installed on OpenBSD PF firewalls, receives messages from 
 "PFUI_Unbound" instances, and installs permitted IPs into PF Tables (using IOCTL) and 'persist' files for use in pf.conf rules.
 
 The "PFUI_Firewall" daemon also maintains a Redis database, to provide TTL tracking. Eg, expiries IP entries using the
@@ -118,8 +118,17 @@ see [Tests](#tests).
 ```
 pkg_add bash
 git clone https://github.com/andylemin/PFUI.git && cd PFUI
-doas ./install-server-python.sh
+doas ./install-server-rust.sh
 ```
+The Rust daemon is the default: one binary on the firewall, with no interpreter
+and no Python packages to keep in step with it. It builds with the rustc in
+ports, which the installer adds, or installs a binary you built elsewhere with
+`PFUI_BINARY=/path/to/pfui_firewall`.
+
+Where Rust is unavailable, `doas ./install-server-python.sh` installs the
+Python daemon instead. Both read the same `/etc/pfui_firewall.yml` and share
+the Redis schema, so either can take over from the other; they are mutually
+exclusive on one firewall, using the same binary path and service name.
 * 1b) Now add IP Reputation Block Lists to PF Firewalls (optional/recommended);\
 https://www.geoghegan.ca/pfbadhost.html \
 https://www.geoghegan.ca/pub/pf-badhost/latest/man/man.txt
@@ -328,7 +337,7 @@ Firewall, `/etc/pfui_firewall.yml` — as above, but with the socket added and
 LOGGING: False
 LOG_LEVEL: ERROR
 SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
-SOCKET_UNIX_GROUP: _pfui      # the resolver's account must be a member
+SOCKET_UNIX_GROUP: _pfui      # both accounts are put in this group for you
 COMPRESS: True
 REDIS_HOST: 127.0.0.1
 REDIS_PORT: 6379
@@ -352,6 +361,21 @@ COMPRESS: True
 BLOCKING: True
 FIREWALLS:
   - SOCKET: /var/run/pfui/pfui_firewall.sock
+```
+
+**No group administration is needed, provided you install the firewall first.**
+`install-server-rust.sh` (or the Python one) creates the `_pfui` group and puts
+`_pfui_firewall` in it; `install-client-unbound.sh` then finds that group and
+adds `_unbound` to it. **Restart Unbound afterwards** — a process does not pick
+up a new group membership until it restarts, and a resolver that is not in the
+group fails to connect with `EACCES`.
+
+If you installed the resolver first, the group did not exist yet and `_unbound`
+was not added. Re-run `install-client-unbound.sh` after the firewall install, or
+do it by hand:
+```
+doas usermod -G _pfui _unbound     # -G replaces secondary groups; list all it needs
+doas rcctl restart pfui_unbound
 ```
 
 Access control is the filesystem here rather than PF: see
@@ -422,17 +446,23 @@ Supports IPv4 and IPv6.
 
 PFUI_Unbound - Supports anything Unbound does (Linux, BSD, etc), requires Python 3.
 
-PFUI_Firewall - Supports OpenBSD (FreeBSD still in alpha), requires Python 3.
+PFUI_Firewall - Supports OpenBSD (FreeBSD still in alpha). Python is optional:
+the default Rust daemon needs none on the firewall, and the Python daemon
+requires Python 3.
 
 
 ------
 ### Known Issues;
 
-Unbound with PFUI_Firewall - Does **not** currently support running Unbound with 'chroot'. TODO Python dependencies must
-also reside in the jail. Virtualenv planned for PFUI release candidate.
+Unbound with PFUI_Firewall - Does **not** currently support running Unbound with
+'chroot'. The resolver's Python module imports its dependencies at load time, and
+those would have to exist inside the chroot. This applies to the resolver only;
+the firewall daemon is unaffected either way.
 
-pfui_firewall.py (/usr/local/sbin/pfui_firewall) - uses an excplicit '#!/usr/local/bin/python3' hash-bang rather than
-usual 'env python3' to occasional boot autostart sequeunce issues.
+The Python daemon (server-python/pfui_firewall.py) uses an explicit
+'#!/usr/local/bin/python3' shebang rather than the usual 'env python3', to avoid
+occasional boot autostart sequence issues. The Rust daemon is a compiled binary
+and is unaffected.
 
 Some browsers tend to cache DNS responses longer than the DNS RRs TTL value! This is bad practice and causes issues
 as websites change IPs for many reasons. `about:config`, set `network.dnsCacheExpiration = 0` to disable the Firefox internal DNS cache (use resolvers cache).

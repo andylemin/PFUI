@@ -175,7 +175,14 @@ pub fn is_expired(meta: &HashMap<String, String>, now: i64, multiplier: u32) -> 
     }
 }
 
-/// IPs of every expired key in `table`, read in batches of `batch`.
+/// An expired entry: the address to withdraw, and the query it answered.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Expired {
+    pub ip: String,
+    pub qname: String,
+}
+
+/// Every expired key in `table`, read in batches of `batch`.
 ///
 /// A per-key fault or an empty hash skips that key; connection errors
 /// propagate so the caller skips the cycle rather than diffing a partial read.
@@ -185,7 +192,7 @@ pub fn expired_keys(
     now: i64,
     multiplier: u32,
     batch: usize,
-) -> Result<Vec<String>, DbError> {
+) -> Result<Vec<Expired>, DbError> {
     let keys = db.scan_keys(&format!("{table}^*"), batch)?;
     let mut expired = Vec::new();
     for chunk in keys.chunks(batch.max(1)) {
@@ -197,7 +204,10 @@ pub fn expired_keys(
             }
             if is_expired(&meta, now, multiplier) {
                 if let Some((_, ip)) = key.split_once('^') {
-                    expired.push(ip.to_string());
+                    expired.push(Expired {
+                        ip: ip.to_string(),
+                        qname: meta.get("qname").cloned().unwrap_or_default(),
+                    });
                 }
             }
         }
@@ -599,7 +609,31 @@ mod tests {
         };
         assert_eq!(
             expired_keys(&mut db, "t", NOW, 4, 500).unwrap(),
-            vec!["1.1.1.1".to_string()]
+            vec![Expired {
+                ip: "1.1.1.1".into(),
+                qname: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn an_expired_entry_carries_the_query_it_answered() {
+        let mut db = FakeDb {
+            keys: vec!["t^8.8.8.8".into()],
+            metas: vec![Some(meta(&[
+                ("kind", "rr"),
+                ("ttl", "60"),
+                ("epoch", "1"),
+                ("qname", "dns.google."),
+            ]))],
+            ..Default::default()
+        };
+        assert_eq!(
+            expired_keys(&mut db, "t", NOW, 4, 500).unwrap(),
+            vec![Expired {
+                ip: "8.8.8.8".into(),
+                qname: "dns.google.".into()
+            }]
         );
     }
 
@@ -622,7 +656,10 @@ mod tests {
         // Split on the first ^ only, so IPv6 colons survive
         assert_eq!(
             expired_keys(&mut db, "t", NOW, 4, 500).unwrap(),
-            vec!["2001:db8::1".to_string()]
+            vec![Expired {
+                ip: "2001:db8::1".into(),
+                qname: String::new()
+            }]
         );
     }
 }

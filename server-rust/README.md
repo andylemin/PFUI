@@ -7,14 +7,20 @@ same Redis schema, same reply strings, same rc.d service name, binary at
 
 ## Status
 
-The daemon is functionally complete: TCP, UNIX and UDP listeners, bounded
+Complete and validated on OpenBSD 7.9: TCP, UNIX and UDP listeners, bounded
 worker pool, the full receiver decision tree with the frozen reply
 vocabulary, PF tables via ioctl or pfctl, Redis, persist files, the
 scan/sync expiry loop, the rc.d script, unveil, and the installer
-(`../install-server-rust.sh`). What remains is validation, not code: the
-whole suite has only run on Linux, so the live `/dev/pf` ioctls, the rc.d
-lifecycle and unveil need an OpenBSD pass before this is deployable, and
-pledge comes only after that pass is green unpledged (see DECISIONS.md).
+(`../install-server-rust.sh`).
+
+The validation covered the parts no container can reach: the struct layouts
+and all three ioctl numbers match `net/pfvar.h` exactly, the table ioctls
+were exercised against a live kernel, the rc.d lifecycle behaves (including
+`reload` refusing), and a real resolver's answers reached the PF tables,
+Redis and the persist files on a firewall carrying live traffic.
+
+pledge(2) is not enabled yet; it comes only after that pass has been repeated
+with it on (see DECISIONS.md).
 
 - `src/wire.rs` — the length-prefixed frame and bounded lz4/JSON decode from
   [../protocol/PROTOCOL.md](../protocol/PROTOCOL.md)
@@ -63,12 +69,8 @@ and clean shutdown.
 
 ## Still to do
 
-- OpenBSD validation pass (vmm/qemu guest; OpenBSD does not run in Docker):
-  the live ioctl suite against a scratch PF table, a one-time bindgen check
-  of the struct offsets, rc.d start/stop/reload-refusal, unveil smoke, and
-  the `test_unbound.py` live cases pointed at this daemon. Runs twice:
-  unpledged first (the baseline), then identically with pledge enabled.
-- pledge, last (see DECISIONS.md for the sequencing rationale)
+- pledge(2), enabled only after the OpenBSD pass above is repeated with it on
+  (see DECISIONS.md for the sequencing rationale)
 
 ## Release builds
 
