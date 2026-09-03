@@ -883,3 +883,33 @@ def test_an_acknowledgement_split_in_transit_is_still_read(plugin):
         assert plugin._breakers[f"{host}:{port}"][0] == 0
     finally:
         listener.close()
+
+
+@pytest.mark.parametrize(
+    "compress,expected", [(True, "compressed"), (False, "uncompressed")]
+)
+def test_a_decode_refusal_names_the_direction_of_the_mismatch(plugin, compress,
+                                                              expected):
+    """A COMPRESS mismatch is the one fault not signalled on the wire, so it can
+    only reach the operator as a refusal. The resolver knows what it sent, which
+    fixes the direction from this end alone."""
+    plugin.pfui_cfg = dict(plugin.CONFIG_DEFAULTS, COMPRESS=compress)
+    detail = plugin.refusal_detail(b"Failed to decode")
+    assert "Failed to decode" in detail
+    assert f"sent {expected} data" in detail
+    assert "the other way" in detail
+
+
+def test_a_refusal_is_logged_with_what_it_means(plugin):
+    plugin.pfui_cfg = dict(plugin.CONFIG_DEFAULTS)
+    assert "different release" in plugin.refusal_detail(b"Missing kind")
+    # An unknown reply is still reported, just without advice
+    assert plugin.refusal_detail(b"something new") == repr(b"something new")
+
+
+def test_every_hint_names_a_documented_refusal(plugin):
+    """The reply strings are fixed by the protocol; a hint for one that does not
+    exist would be advice nobody ever sees."""
+    protocol = (COMPONENT.parent / "protocol" / "PROTOCOL.md").read_text()
+    for reply in plugin.REFUSAL_HINTS:
+        assert f"`{reply.decode()}`" in protocol, reply

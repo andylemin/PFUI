@@ -246,20 +246,25 @@ fn handle_stream(_kind: StreamKind, conn: &mut dyn Stream, peer: &str, ctx: &Ctx
             reply(conn, Refusal::EmptyPayload.as_str());
             return;
         }
+        // A transport error is not a decode failure and the protocol has no
+        // reply for one, so it is logged as itself and the connection closed
+        Err(ReadError::Io(io))
+            if io.kind() != std::io::ErrorKind::TimedOut
+                && io.kind() != std::io::ErrorKind::WouldBlock =>
+        {
+            ctx.log
+                .error(&format!("socket read failed: {io}; closing {peer}"));
+            return;
+        }
         Err(e) => {
             let refusal = match &e {
-                ReadError::Io(io)
-                    if io.kind() == std::io::ErrorKind::TimedOut
-                        || io.kind() == std::io::ErrorKind::WouldBlock =>
-                {
-                    Refusal::SocketTimeout
-                }
-                ReadError::Io(_) => Refusal::FailedToDecode,
+                ReadError::Io(_) => Refusal::SocketTimeout,
                 ReadError::Wire(WireError::BadLength(_)) => Refusal::BadLength,
                 ReadError::Wire(WireError::Truncated { .. }) => Refusal::Truncated,
                 ReadError::Wire(WireError::DecompressUnfinished) => Refusal::BadFrame,
                 ReadError::Wire(WireError::DecompressCorrupt(_))
-                | ReadError::Wire(WireError::Json(_)) => Refusal::FailedToDecode,
+                | ReadError::Wire(WireError::Json(_))
+                | ReadError::Wire(WireError::CompressMismatch { .. }) => Refusal::FailedToDecode,
             };
             ctx.log
                 .error(&format!("{e}; disconnecting {peer} ({})", refusal.as_str()));

@@ -264,7 +264,10 @@ def udp_transmit_close(data, ip, port, blocking):
             msg = udp_receive(soc=soc, rcvbuf=64, retry=1)
             confirmed = msg == b"ACKUPDATE"
             if not confirmed:
-                log_err(f"PFUIDNS: {ip}:{port} did not confirm the update: {msg!r}")
+                log_err(
+                    f"PFUIDNS: {ip}:{port} did not confirm the update: "
+                    f"{refusal_detail(msg)}"
+                )
         breaker_record(f"{ip}:{port}", ok=confirmed)
 
     # close sender udp socket
@@ -376,7 +379,8 @@ def stream_transmit_close(data, family, address, target, blocking):
                 # The firewall replies with a reason when it refuses a message,
                 # e.g. a version skew that leaves the wire format mismatched
                 log_err(
-                    f"PFUIDNS: {target} did not confirm the update: {reply!r}"
+                    f"PFUIDNS: {target} did not confirm the update: "
+                    f"{refusal_detail(reply)}"
                 )
         # A non-blocking send records nothing: the firewall has not answered
         # yet, and counting it a success cleared the failures the blocking path
@@ -418,6 +422,39 @@ def unix_transmit_close(data, path, blocking):
         target=path,
         blocking=blocking,
     )
+
+
+# What a firewall's refusal usually means at this end. The reply strings are
+# fixed by the protocol, so this is a lookup rather than parsing.
+REFUSAL_HINTS = {
+    b"Failed to decode": "COMPRESS must be set the same on both ends",
+    b"Bad length": "the firewall expects a different framing; deploy both ends "
+                   "from the same release",
+    b"Bad frame": "the compressed payload did not decompress; check COMPRESS "
+                  "and the message size",
+    b"Missing kind": "the firewall is running a different release of PFUI",
+    b"Invalid datatype": "the firewall did not recognise this as a PFUI message",
+    b"No records": "the answer carried no globally routable address",
+}
+
+
+def refusal_detail(reply):
+    """A refusal with what it usually means, for the log.
+
+    A decode failure is reported with what this resolver sent, which fixes the
+    direction of a COMPRESS mismatch from this end alone: the firewall is set
+    the other way.
+    """
+    hint = REFUSAL_HINTS.get(reply)
+    if reply == b"Failed to decode":
+        compress = globals().get("pfui_cfg", {}).get("COMPRESS")
+        if compress is not None:
+            sent = "compressed" if compress else "uncompressed"
+            hint = (
+                f"this resolver sent {sent} data (COMPRESS: {compress}), so the "
+                f"firewall is set the other way; they must match"
+            )
+    return f"{reply!r} ({hint})" if hint else repr(reply)
 
 
 def firewall_target(fw):

@@ -25,6 +25,11 @@ pub enum WireError {
     DecompressCorrupt(String),
     /// Payload is not valid JSON -> "Failed to decode"
     Json(String),
+    /// The payload's shape contradicts COMPRESS -> "Failed to decode".
+    /// Compression is configuration on both ends and is not signalled on the
+    /// wire, so a mismatch can only surface as a decode failure. The lz4 frame
+    /// magic says which end is wrong, which is worth saying outright.
+    CompressMismatch { compress_configured: bool },
 }
 
 impl fmt::Display for WireError {
@@ -39,6 +44,20 @@ impl fmt::Display for WireError {
             }
             WireError::DecompressCorrupt(e) => write!(f, "lz4 frame corrupt: {e}"),
             WireError::Json(e) => write!(f, "payload is not valid JSON: {e}"),
+            WireError::CompressMismatch {
+                compress_configured: true,
+            } => write!(
+                f,
+                "payload is not an lz4 frame but COMPRESS is on: the sender is \
+                 not compressing. COMPRESS must match at both ends"
+            ),
+            WireError::CompressMismatch {
+                compress_configured: false,
+            } => write!(
+                f,
+                "payload is an lz4 frame but COMPRESS is off: the sender is \
+                 compressing. COMPRESS must match at both ends"
+            ),
         }
     }
 }
@@ -133,9 +152,21 @@ pub fn read_frame(
     }
 }
 
+/// lz4 frame magic (0x184D2204, little-endian on the wire). Read only to tell
+/// a compression mismatch from a payload that is genuinely damaged.
+const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+
 /// Decode one frame's payload (the bytes after the length prefix). UDP
 /// datagrams carry the payload alone, so this is also the datagram decoder.
 pub fn decode(payload: &[u8], compress: bool) -> Result<serde_json::Value, WireError> {
+    if payload.len() >= LZ4_FRAME_MAGIC.len() {
+        let looks_lz4 = payload[..LZ4_FRAME_MAGIC.len()] == LZ4_FRAME_MAGIC;
+        if looks_lz4 != compress {
+            return Err(WireError::CompressMismatch {
+                compress_configured: compress,
+            });
+        }
+    }
     let plain;
     let bytes: &[u8] = if compress {
         plain = decompress_bounded(payload, MAX_MESSAGE)?;
@@ -288,17 +319,42 @@ mod tests {
     }
 
     #[test]
-    fn compress_flag_mismatch_is_a_decode_failure() {
-        // Compression is configuration, not signalled on the wire; a mismatch
-        // must surface as a named refusal, not a panic
+    fn a_sender_that_does_not_compress_is_named_as_such() {
+        let err = decode(br#"{"kind":"rr"}"#, true).expect_err("plain under COMPRESS");
         assert!(matches!(
-            decode(br#"{"kind":"rr"}"#, true),
-            Err(WireError::DecompressCorrupt(_) | WireError::DecompressUnfinished)
+            err,
+            WireError::CompressMismatch {
+                compress_configured: true
+            }
         ));
+        let text = err.to_string();
+        assert!(text.contains("not compressing"), "{text}");
+        assert!(text.contains("COMPRESS"), "{text}");
+    }
+
+    #[test]
+    fn a_sender_that_compresses_when_we_do_not_is_named_as_such() {
         let compressed = compress(br#"{"kind":"rr"}"#);
+        let err = decode(&compressed, false).expect_err("lz4 without COMPRESS");
         assert!(matches!(
-            decode(&compressed, false),
-            Err(WireError::Json(_))
+            err,
+            WireError::CompressMismatch {
+                compress_configured: false
+            }
+        ));
+        let text = err.to_string();
+        assert!(text.contains("is compressing"), "{text}");
+    }
+
+    #[test]
+    fn a_genuinely_damaged_frame_is_not_called_a_mismatch() {
+        // Magic intact, body ruined: that is corruption, not a config error
+        let mut blob = compress(b"payload");
+        let n = blob.len();
+        blob[n - 3] ^= 0xFF;
+        assert!(!matches!(
+            decompress_bounded(&blob, MAX_MESSAGE),
+            Err(WireError::CompressMismatch { .. })
         ));
     }
 
