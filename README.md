@@ -337,7 +337,7 @@ Firewall, `/etc/pfui_firewall.yml` — as above, but with the socket added and
 LOGGING: False
 LOG_LEVEL: ERROR
 SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
-SOCKET_UNIX_GROUP: _pfui      # the resolver's account must be a member
+SOCKET_UNIX_GROUP: _pfui      # both accounts are put in this group for you
 COMPRESS: True
 REDIS_HOST: 127.0.0.1
 REDIS_PORT: 6379
@@ -361,6 +361,21 @@ COMPRESS: True
 BLOCKING: True
 FIREWALLS:
   - SOCKET: /var/run/pfui/pfui_firewall.sock
+```
+
+**No group administration is needed, provided you install the firewall first.**
+`install-server-rust.sh` (or the Python one) creates the `_pfui` group and puts
+`_pfui_firewall` in it; `install-client-unbound.sh` then finds that group and
+adds `_unbound` to it. **Restart Unbound afterwards** — a process does not pick
+up a new group membership until it restarts, and a resolver that is not in the
+group fails to connect with `EACCES`.
+
+If you installed the resolver first, the group did not exist yet and `_unbound`
+was not added. Re-run `install-client-unbound.sh` after the firewall install, or
+do it by hand:
+```
+doas usermod -G _pfui _unbound     # -G replaces secondary groups; list all it needs
+doas rcctl restart pfui_unbound
 ```
 
 Access control is the filesystem here rather than PF: see
