@@ -852,3 +852,34 @@ def test_logger_tolerates_a_reply_without_records(plugin):
                                 "qclass_str": "IN", "qclass": 1})(),
     })()
     plugin.logger(qstate)
+
+
+def test_an_acknowledgement_split_in_transit_is_still_read(plugin):
+    """One recv() took whatever the first segment held, so a reply delivered in
+    two pieces compared unequal to ACKUPDATE and was charged as a refusal."""
+    import threading
+    import time as _time
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    host, port = listener.getsockname()
+
+    def serve():
+        conn, _ = listener.accept()
+        conn.recv(1024)
+        conn.send(b"ACK")          # deliberately split
+        _time.sleep(0.05)
+        conn.send(b"UPDATE")
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    plugin.pfui_cfg = dict(plugin.CONFIG_DEFAULTS, SOCKET_TIMEOUT=2,
+                           BREAKER_FAILURES=3, BREAKER_COOLOFF=30)
+    plugin._breakers.clear()
+    try:
+        plugin.tcp_transmit_close(b"x", host, port, blocking=True)
+        # A confirmed update leaves no failure counted against the firewall
+        assert plugin._breakers[f"{host}:{port}"][0] == 0
+    finally:
+        listener.close()

@@ -362,7 +362,15 @@ def stream_transmit_close(data, family, address, target, blocking):
     # keeps denying the traffic either way.
     try:
         if blocking and sent:  # Nothing to acknowledge if the send failed
-            reply = conn.recv(36)  # Wait for pfui_firewall to ACK
+            # Read until the firewall closes rather than taking one segment: a
+            # reply split in transit compared unequal to ACKUPDATE and was
+            # charged to the breaker as a refusal
+            reply = b""
+            while len(reply) < 36:
+                chunk = conn.recv(36 - len(reply))
+                if not chunk:
+                    break
+                reply += chunk
             breaker_record(target, ok=(reply == b"ACKUPDATE"))
             if reply != b"ACKUPDATE":
                 # The firewall replies with a reason when it refuses a message,
