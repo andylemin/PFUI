@@ -49,6 +49,30 @@ from socket import error as ERROR
 from socket import inet_ntop, ntohs, socket
 from socket import timeout as TIMEOUT
 
+# Severities, ordered. log_err() is never gated on these: an error is reported
+# whatever LOG_LEVEL says, because the setting selects how much detail
+# accompanies a fault rather than whether faults are reported at all.
+LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "ERROR": 40}
+
+
+def log_at(level):
+    """True when a message of this severity should be emitted.
+
+    LOG_LEVEL is a threshold, not an equality test. Testing it for equality with
+    DEBUG left every other informational line gated on LOGGING alone, so the
+    default LOG_LEVEL: ERROR still emitted per-query INFO output. An unrecognised
+    level reads as ERROR rather than opening the logs up.
+    """
+    cfg = globals().get("pfui_cfg") or {}
+    if not cfg.get("LOGGING", False):
+        return False
+    # Normalised the same way load_config does, so a value that reached pfui_cfg
+    # without passing through it is read identically
+    threshold = LOG_LEVELS.get(
+        str(cfg.get("LOG_LEVEL", "ERROR")).strip().upper(), LOG_LEVELS["ERROR"]
+    )
+    return LOG_LEVELS[level] >= threshold
+
 
 def data_to_hex(data, prefix=""):
     """PFUI: Converts RR binary data to display form. Function taken from Unbound source examples."""
@@ -133,7 +157,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
     not have to guess from the magnitude.
     """
 
-    if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+    if log_at("DEBUG"):
         log_info(f"rep: {rep}, qname_str: {qname_str}")
 
     # Extract all IPs and TTLs from all RR sets
@@ -156,7 +180,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
                             AF_INET, rr_ip4
                         )  # IP bytes to display format
                         ipv4_resps.append({"ip": ipv4_addr, "ttl": int(rr_ttl4)})
-                        if pfui_cfg["LOGGING"]:
+                        if log_at("DEBUG"):
                             log_info(
                                 f"PFUIDNS: {qname_str} Found IPv4 address {ipv4_addr}"
                             )
@@ -177,7 +201,7 @@ def read_rr(rep=None, qname_str="", from_cache=False):
                             AF_INET6, rr_ip6
                         )  # IP6 bytes to display format
                         ipv6_resps.append({"ip": ipv6_addr, "ttl": int(rr_ttl6)})
-                        if pfui_cfg["LOGGING"]:
+                        if log_at("DEBUG"):
                             log_info(
                                 f"PFUIDNS: {qname_str} Found IPv6 address {ipv6_addr}"
                             )
@@ -210,7 +234,8 @@ def udp_transmit(soc, data, ip, port, retry=1, wait_for_ack=True):
     while tries < retry:
         tries += 1
         try:
-            log_info(f"PFUIDNS: UDP Transmitting {len(data)} bytes")
+            if log_at("DEBUG"):
+                log_info(f"PFUIDNS: UDP Transmitting {len(data)} bytes")
             soc.sendto(data, (ip, port))
         except Exception as e:
             # No acknowledgement can follow a send that did not leave, so this
@@ -221,17 +246,20 @@ def udp_transmit(soc, data, ip, port, retry=1, wait_for_ack=True):
             return None
         msg = udp_receive(soc=soc, rcvbuf=64, retry=1)
         if msg in (b"ACKDATA", b"ACKUPDATE"):
-            log_info(f"PFUIDNS: Received {msg!r} (transmit success)")
+            if log_at("DEBUG"):
+                log_info(f"PFUIDNS: Received {msg!r} (transmit success)")
             return msg
-        log_info(f"PFUIDNS: Received message not an acknowledgement: {msg!r}")
-    log_info(f"PFUIDNS: no acknowledgement from {ip}:{port}, last was {msg!r}")
+        if log_at("DEBUG"):
+            log_info(f"PFUIDNS: Received message not an acknowledgement: {msg!r}")
+    log_err(f"PFUIDNS: no acknowledgement from {ip}:{port}, last was {msg!r}")
 
 
 def udp_receive(soc, rcvbuf=1400, retry=1):
     tries = 0
     while tries < retry:
         try:
-            log_info(f"PFUIDNS: UDP waiting to recieve")
+            if log_at("DEBUG"):
+                log_info("PFUIDNS: UDP waiting to receive")
             msg, _ = soc.recvfrom(rcvbuf)
             if msg:
                 return msg
@@ -240,7 +268,7 @@ def udp_receive(soc, rcvbuf=1400, retry=1):
                 "PFUIDNS: timeout udp_receive"
             )
         tries += 1
-    log_info(f"PFUIDNS: Timeout udp receive - all retries")
+    log_err("PFUIDNS: Timeout udp receive - all retries")
 
 
 def udp_transmit_close(data, ip, port, blocking):
@@ -251,8 +279,7 @@ def udp_transmit_close(data, ip, port, blocking):
     # 3s each a down firewall blocked the resolver for ~2 minutes per query
     soc.settimeout(float(pfui_cfg["UDP_ACK_TIMEOUT"]))
 
-    # A cache report is fire-and-forget, so it waits for nothing: holding the
-    # answer for an acknowledgement is what BLOCKING asks for, and this is not it
+    # Only a blocking send waits: a cache report has nothing to acknowledge
     reply = udp_transmit(
         soc, data, ip, port, pfui_cfg["UDP_RETRY"], wait_for_ack=blocking
     )
@@ -304,6 +331,16 @@ def breaker_record(target, ok):
     """Count consecutive failures and open the breaker once the threshold trips."""
     state = _breakers.setdefault(target, [0, 0])
     if ok:
+        # Only the transition is reported, not every success: opening the breaker
+        # was logged while closing it was silent, so a firewall was seen going
+        # away and never coming back. state[1] set means it had actually opened.
+        if state[1]:
+            if log_at("INFO"):
+                log_info(
+                    f"PFUIDNS: {target} acknowledged again; resuming updates to it"
+                )
+        elif state[0] and log_at("DEBUG"):
+            log_info(f"PFUIDNS: {target} recovered after {state[0]} failure(s)")
         state[0], state[1] = 0, 0
         return
     state[0] += 1
@@ -483,7 +520,7 @@ def firewall_target(fw):
 def transmit_all(pfui_dict, blocking=True):
     """PFUI: Transmits IP and TTL data to PF Firewalls running pfui_firewall."""
 
-    if pfui_cfg["LOGGING"]:
+    if log_at("DEBUG"):
         start = time()
 
     # Encoded once for all firewalls, and only if there is one to send to: the
@@ -498,9 +535,10 @@ def transmit_all(pfui_dict, blocking=True):
         kind, target, address = destination
 
         if breaker_open(target):
-            log_info(f"PFUIDNS: Skipping {target}, circuit breaker open")
+            if log_at("DEBUG"):
+                log_info(f"PFUIDNS: Skipping {target}, circuit breaker open")
             continue
-        if pfui_cfg["LOGGING"]:
+        if log_at("DEBUG"):
             log_info(f"PFUIDNS: Sending '{pfui_dict}' to {target}")
 
         # JSON, optionally lz4 compressed. Both stream transports add a length
@@ -539,7 +577,7 @@ def transmit_all(pfui_dict, blocking=True):
                 f"or UDP; {target} was not told about {pfui_dict}"
             )
 
-    if pfui_cfg["LOGGING"]:
+    if log_at("DEBUG"):
         log_info(f"PFUIDNS: Query Unblocked {(time() - start)*1000000} microsecs")
 
 
@@ -552,9 +590,15 @@ def inplace_cache_callback(
     Returns True, and never raises: an exception here discards the cache hit,
     and the callback's return value is read as a boolean, so returning nothing
     leaves an error pending for the next query to fail on.
+
+    Sent non-blocking whatever BLOCKING is set to. A cache hit means the name was
+    resolved earlier, so an rr report already installed these addresses for
+    TTL_MULTIPLIER times the DNS TTL - longer than Unbound keeps the answer - and
+    the client can already reach them. This report extends an expiry that has not
+    arrived, so there is nothing to hold the answer for.
     """
     try:
-        if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+        if log_at("DEBUG"):
             log_info("pythonmod: cache_callback called - answering from cache.")
             log_info(
                 f"Cache data - qinfo: {qinfo}, qstate: {qstate}, rep: {rep}, rcode: {rcode}, edns: {edns}, opt_list_out: {opt_list_out}, region: {region}"
@@ -576,9 +620,8 @@ def init(id, cfg):
     id: module identifier (integer)
     cfg: Unbound config_file configuration structure
     """
-    log_info(
-        f"pythonmod: init, id {id}, cfg: {cfg}"
-    )
+    if log_at("DEBUG"):
+        log_info(f"pythonmod: init, id {id}, cfg: {cfg}")
     return True
 
 
@@ -590,7 +633,7 @@ def init_standard(id, env):
     id: module identifier (integer)
     env: module_env module environment
     """
-    if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+    if log_at("DEBUG"):
         log_info(
             f"pythonmod: init_standard, id {id}, port: {env.cfg.port}, script: {env.cfg.python_script}"
         )
@@ -610,7 +653,7 @@ def deinit(id):
     pythonmod: Deconstructor
     id: module identifier (integer)
     """
-    if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+    if log_at("DEBUG"):
         log_info(f"pythonmod: deinit, id {id}")
     return True
 
@@ -625,7 +668,7 @@ def inform_super(id, qstate, superqstate, qdata):
     superqstate: pythonmod_qstate Mesh state
     qdata: query_info Query data
     """
-    if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+    if log_at("DEBUG"):
         log_info(f"pythonmod: inform_super, id {id}, qstate {qstate}")
     return True
 
@@ -699,17 +742,17 @@ def operate(id, event, qstate, qdata):
 
 def _operate(id, event, qstate, qdata):
 
-    if pfui_cfg["LOGGING"]:
+    if log_at("DEBUG"):
         log_info(f"pythonmod: operate, id: {id}, {event_name(event)}")
 
     if event == MODULE_EVENT_MODDONE:
-        if pfui_cfg["LOGGING"]:
+        if log_at("DEBUG"):
             log_info(
                 "pythonmod: MODULE_EVENT_MODDONE (Iterator finished, inspecting RR)"
             )
         pfui_msg = None
         if qstate.return_msg:
-            if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+            if log_at("DEBUG"):
                 if qstate.return_msg.rep and qstate.return_msg.qinfo:
                     logger(qstate)
             if qstate.return_msg.rep:
@@ -720,13 +763,13 @@ def _operate(id, event, qstate, qdata):
         return True
 
     if event == MODULE_EVENT_NEW:
-        if pfui_cfg["LOGGING"]:
+        if log_at("DEBUG"):
             log_info("pythonmod: MODULE_EVENT_NEW")
         qstate.ext_state[id] = MODULE_WAIT_MODULE
         return True
 
     if event == MODULE_EVENT_PASS:
-        if pfui_cfg["LOGGING"]:
+        if log_at("DEBUG"):
             log_info("pythonmod: MODULE_EVENT_PASS")
         qstate.ext_state[id] = MODULE_WAIT_MODULE
         return True
@@ -794,6 +837,17 @@ def load_config(location=CONFIG_LOCATION):
             cfg[key] = cast(cfg[key])
         except (TypeError, ValueError):
             raise ValueError(f"{key} must be a number, not {cfg[key]!r}") from None
+
+    # Normalised rather than rejected: an unrecognised level is not worth
+    # refusing to resolve over, and log_at() reads it as ERROR either way. Said
+    # out loud because the symptom of a typo is silently quieter logs.
+    cfg["LOG_LEVEL"] = str(cfg["LOG_LEVEL"]).strip().upper()
+    if cfg["LOG_LEVEL"] not in LOG_LEVELS:
+        log_err(
+            f"PFUIDNS: LOG_LEVEL '{cfg['LOG_LEVEL']}' is not one of "
+            f"{'/'.join(LOG_LEVELS)}; treating it as ERROR"
+        )
+        cfg["LOG_LEVEL"] = "ERROR"
 
     cfg["SOCKET_PROTO"] = str(cfg["SOCKET_PROTO"]).strip().upper()
     if cfg["SOCKET_PROTO"] not in ("TCP", "UDP"):
