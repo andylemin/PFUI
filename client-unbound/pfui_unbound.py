@@ -439,8 +439,21 @@ REFUSAL_HINTS = {
 
 
 def refusal_detail(reply):
-    """A refusal with what it usually means, for the log."""
+    """A refusal with what it usually means, for the log.
+
+    A decode failure is reported with what this resolver sent, which fixes the
+    direction of a COMPRESS mismatch from this end alone: the firewall is set
+    the other way.
+    """
     hint = REFUSAL_HINTS.get(reply)
+    if reply == b"Failed to decode":
+        compress = globals().get("pfui_cfg", {}).get("COMPRESS")
+        if compress is not None:
+            sent = "compressed" if compress else "uncompressed"
+            hint = (
+                f"this resolver sent {sent} data (COMPRESS: {compress}), so the "
+                f"firewall is set the other way; they must match"
+            )
     return f"{reply!r} ({hint})" if hint else repr(reply)
 
 
