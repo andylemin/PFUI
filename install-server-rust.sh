@@ -23,6 +23,10 @@ if [[ $(id -u) -ne 0 ]]; then
   exit 1
 fi
 
+echo "*************************************************************************************"
+echo "* Welcome to the PFUI_Firewall (Rust) Installer (https://github.com/andylemin/PFUI) *"
+echo "*************************************************************************************"
+
 if [[ $(uname) != "OpenBSD" ]]; then
   echo "PFUIFW: Looks like a non-supported operating system."
   echo "PFUIFW Supported OS: OpenBSD"

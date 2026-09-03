@@ -20,6 +20,10 @@ if [[ $(id -u) -ne 0 ]]; then
   exit 1
 fi
 
+echo "***************************************************************************************"
+echo "* Welcome to the PFUI_Firewall (Python) Installer (https://github.com/andylemin/PFUI) *"
+echo "***************************************************************************************"
+
 if [[ $(uname) == "OpenBSD" ]]; then
   OS="OpenBSD"
 else
