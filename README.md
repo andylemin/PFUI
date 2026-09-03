@@ -88,7 +88,9 @@ NB; Since OpenBSD 7.0, IOCTL is unlocked from Kernel CPU lock (this change allow
 PFUI_Unbound can notify the resolved IPs, and PFUI_Firewall can ACK (PF Table updated) in a few
 milliseconds on moderate hardware (measured at 3300-4200 microseconds on an i5 with 1GbE; enable
 `LOGGING` with `LOG_LEVEL: DEBUG` to measure it on your own network, and note that logging itself
-adds latency). A fully recursive DNS query can take tens to hundreds of milliseconds to resolve the resource records 
+adds latency). That figure is the round trip a freshly resolved answer waits for over TCP; a local
+socket is well under it, and a cache hit waits for nothing at all
+(see [BLOCKING](#blocking)). A fully recursive DNS query can take tens to hundreds of milliseconds to resolve the resource records 
 (on a fast internet connection), so the delay added by PFUI is undetectable for the total client query time. And often improves overall performance due to not downloading adverts and tracking widgets.
 
 ------
@@ -181,8 +183,33 @@ You can monitor Unbound with 'unbound-control status' & 'unbound-control stats'
 ------
 <a name="unboundadblock"></a>
 ### 2b) Unbound-Adblock (example DNS Domain BlockList Manager)
-Using Jordan's Bad Domain Block Lists manager (https://www.geoghegan.ca/unbound-adblock.html).
+Using Jordan's Bad Domain Block Lists manager (https://www.geoghegan.ca/unbound-adblock.html)
+to fetch and publish the lists, and **[HaGeZi's DNS blocklists](https://github.com/hagezi/dns-blocklists)
+as the preferred source**.
 
+#### Which list, and which format
+
+HaGeZi publishes several tiers; pick one and add more only if you need them:
+
+| List | What it covers |
+|------|----------------|
+| `light` | The smallest sensible default: ads, tracking, the worst malware |
+| `pro` | The usual recommendation: broader ads, tracking and telemetry |
+| `pro.plus` | `pro` plus more aggressive tracking and native app telemetry |
+| `tif` | Threat Intelligence Feeds: malware, phishing, scams. Add to one of the above |
+
+**HaGeZi ships no `/etc/hosts` format**, unlike StevenBlack, so the `-l` and `-u`
+options do not apply. Use the **domain-only** lists, which `unbound-adblock`
+takes with `-d` (a URL) or `-t` (a file of URLs):
+
+```
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif-onlydomains.txt
+```
+
+Note the `-onlydomains` suffix: the plain `wildcard/pro.txt` files carry `*.`
+wildcards, and the `adblock/` directory carries ABP filter syntax, neither of
+which `unbound-adblock` parses. It ingests domain-only and hosts formats only.
 
 Jordan has done a great job creating a comprehensive bad domains downloader which is highly customisable.
 His last version (0.5) switched to using RPZ (Response Policy Zones) by default, so we have to make some minor changes.
@@ -227,10 +254,14 @@ sed -i -e 's/check unbound/check pfui_unbound/g' /usr/local/bin/unbound-adblock
 sed -i -e "s/rcdarg2='unbound'/rcdarg2='pfui_unbound'/g" /usr/local/bin/unbound-adblock
 ```
 
-Test unbound-adblock manually. Run Jordan's unbound-adblock tool with the following arguments to generate an Unbound list-format blocklist
+Test unbound-adblock manually. Run Jordan's unbound-adblock tool with the following arguments to generate an Unbound list-format blocklist from the HaGeZi domain lists
 ```
-doas -u _adblock unbound-adblock -O openbsd -o unbound -W /var/unbound/db/adblock.conf
+doas -u _adblock unbound-adblock -O openbsd -o unbound -W /var/unbound/db/adblock.conf \
+  -d https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt \
+  -d https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif-onlydomains.txt
 ```
+`-d` may be repeated, or replaced with `-t /var/db/blocklist_urls.txt` holding one
+URL per line, which keeps the crontab short.
 Add the following line to `/var/unbound/etc/pfui_unbound.conf` before the `python:` and forwarders section, instead of the suggested RPZ config, to load the list-format file.
 ```
 include: /var/unbound/db/adblock.conf
@@ -239,9 +270,10 @@ Restart PFUI_Unbound to load the new DNS Bad Domains list
 ```
 rcctl restart pfui_unbound
 ```
-Edit _adblock user's crontab to; execute 'unbound-adblock' every night (`crontab -u _adblock -e`):
+Edit _adblock user's crontab to; execute 'unbound-adblock' every night (`crontab -u _adblock -e`),
+with the sources in a file so the line stays readable:
 ```
-~ 0~1 * * * -s unbound-adblock -O openbsd -o unbound -W /var/unbound/db/adblock.conf
+~ 0~1 * * * -s unbound-adblock -O openbsd -o unbound -W /var/unbound/db/adblock.conf -t /var/db/blocklist_urls.txt
 ```
 Edit _unbound user's crontab to; import domain lists / execute 'unbound-control reload' after unbound-adblock (`crontab -u _unbound -e`):
 ```
@@ -249,8 +281,14 @@ Edit _unbound user's crontab to; import domain lists / execute 'unbound-control 
 ```
 NB; If you want to keep the `unbound-control` cron commands under the _adblock user, you will need to add _adblock to _unbound group.
 
-Jordan's unbound-adblock installation guide for reference;\
-https://www.geoghegan.ca/pub/unbound-adblock/latest/install/openbsd.txt \
+NB; `client-unbound/tools/update_dns_blocklist.sh` is an alternative to
+unbound-adblock that ships with PFUI. It still fetches StevenBlack's hosts-format
+lists, so it converts with a hosts parser; pointing it at HaGeZi means reading the
+domain-only format instead.
+
+References;\
+HaGeZi's lists and what each tier blocks: https://github.com/hagezi/dns-blocklists \
+Jordan's unbound-adblock installation guide: https://www.geoghegan.ca/pub/unbound-adblock/latest/install/openbsd.txt \
 https://www.geoghegan.ca/pub/pf-badhost/latest/man/man.txt
 
 ------
@@ -283,6 +321,37 @@ Two transports carry the same messages and the same replies. Pick per firewall:
 a **TCP socket** when the resolver is on another machine, a **unix socket** when
 it is on the firewall itself. A resolver can use both at once.
 
+<a name="blocking"></a>
+#### BLOCKING — holding the answer until the table is updated
+
+`BLOCKING: True` is **the default** and the recommended setting; the examples
+below set it explicitly only to make it visible. It is what closes the race the
+whole design exists to close: the client cannot receive an address until PF will
+pass traffic to it.
+
+It applies to **freshly resolved answers only** (`kind: rr`, sent from the
+resolver's `operate()`). The resolver sends the message and then waits for
+`ACKUPDATE`, which the firewall sends after the addresses are in the table, so
+the query pays a full round trip including the PF ioctl.
+
+**Cache hits do not wait, whatever `BLOCKING` is set to** (`kind: cache`, sent
+from `inplace_cache_callback`), and do not need to. Answering from cache means
+the name was resolved earlier, and that earlier answer was only released once the
+addresses were in the table: a positive cached response implies access was
+already allowed. A cache report only resets the TTL, so there is nothing to hold
+the answer for, and the resolver does not read a reply at all. The firewall
+holds an entry for `TTL_MULTIPLIER` times the DNS TTL — four times longer than
+Unbound keeps the answer — so the entry cannot lapse first.
+
+The gap between the two paths is therefore the round trip itself, not a faster
+update: a cache report costs a connect, a send and a close, while an `rr` report
+costs that plus the firewall's table update and the reply.
+
+`BLOCKING: False` releases every answer immediately and is **experimental**: it
+requires `all no state` in `pf.conf` for denied client traffic, because a client
+may now connect to an address before the table has it. See the notes in
+[examples/pf.conf](examples/pf.conf).
+
 #### TCP socket — resolver on another host
 
 Firewall, `/etc/pfui_firewall.yml`:
@@ -313,7 +382,7 @@ LOG_LEVEL: ERROR
 SOCKET_PROTO: TCP
 SOCKET_TIMEOUT: 3
 COMPRESS: True                # must match the firewall
-BLOCKING: True                # hold the answer until the IPs are in the table
+BLOCKING: True                # the default; hold a fresh answer until the IPs are in the table
 DEFAULT_PORT: 10001
 FIREWALLS:
   - HOST: 10.10.1.254
@@ -359,7 +428,7 @@ LOGGING: False
 LOG_LEVEL: ERROR
 SOCKET_TIMEOUT: 3
 COMPRESS: True
-BLOCKING: True
+BLOCKING: True                # the default
 FIREWALLS:
   - SOCKET: /var/run/pfui/pfui_firewall.sock
 ```
