@@ -76,6 +76,9 @@ def logger(qstate):
 
     r = qstate.return_msg.rep
     q = qstate.return_msg.qinfo
+    if not r or not q:
+        log_info(f"Query: {qstate.qinfo.qname_str} carried no reply to log")
+        return
     log_info("-" * 100)
     log_info(
         f"Query: {qstate.qinfo.qname_str}, "
@@ -194,27 +197,34 @@ def read_rr(rep=None, qname_str="", from_cache=False):
         return False
 
 
-def udp_transmit(soc, data, ip, port, retry=1):
+def udp_transmit(soc, data, ip, port, retry=1, wait_for_ack=True):
+    """Send one datagram, optionally waiting for the firewall to acknowledge it.
+
+    Returns the acknowledgement received, or None. ACKUPDATE counts as one:
+    the datagrams can arrive in either order, and taking only ACKDATA meant a
+    firewall that had already updated PF was retransmitted to and then counted
+    a failure.
+    """
     tries = 0
-    msg = None  # retry may be 0, and the summary below reads this
+    msg = None
     while tries < retry:
+        tries += 1
         try:
             log_info(f"PFUIDNS: UDP Transmitting {len(data)} bytes")
             soc.sendto(data, (ip, port))
-        except TIMEOUT:
-            log_err(
-                f"PFUIDNS: UDP socket timeout {ip}:{port}"
-            )
         except Exception as e:
-            log_err(f"PFUIDNS: UDP socket exception {ip}:{port}, '{e}'")
-        msg = udp_receive(soc=soc, rcvbuf=40, retry=1)  # Wait pfui_firewall ack data
-        if msg == b"ACKDATA":  # 40
-            log_info(f"PFUIDNS: Received ACKDATA (transmit success): {msg}")
+            # No acknowledgement can follow a send that did not leave, so this
+            # does not pay the ACK timeout before retrying
+            log_err(f"PFUIDNS: UDP send failed {ip}:{port}, '{e}'")
+            continue
+        if not wait_for_ack:
+            return None
+        msg = udp_receive(soc=soc, rcvbuf=64, retry=1)
+        if msg in (b"ACKDATA", b"ACKUPDATE"):
+            log_info(f"PFUIDNS: Received {msg!r} (transmit success)")
             return msg
-        else:
-            log_info(f"PFUIDNS: Received message not ACKDATA: {msg}")
-        tries += 1
-    log_info(f"PFUIDNS: timeout udp_transmit: buff {msg}")
+        log_info(f"PFUIDNS: Received message not an acknowledgement: {msg!r}")
+    log_info(f"PFUIDNS: no acknowledgement from {ip}:{port}, last was {msg!r}")
 
 
 def udp_receive(soc, rcvbuf=1400, retry=1):
@@ -241,19 +251,21 @@ def udp_transmit_close(data, ip, port, blocking):
     # 3s each a down firewall blocked the resolver for ~2 minutes per query
     soc.settimeout(float(pfui_cfg["UDP_ACK_TIMEOUT"]))
 
-    # transmit pf firewall data
-    reply = udp_transmit(soc, data, ip, port, int(pfui_cfg["UDP_RETRY"]))
-    breaker_record(f"{ip}:{port}", ok=(reply == b"ACKDATA"))
-
-    # wait for pf firewall update
-    if blocking:  # Wait for secondary ACKUPDATE
-        msg = udp_receive(soc=soc, rcvbuf=42, retry=1)
-        if msg == b"ACKUPDATE":
-            log_info(
-                "PFUIDNS: Recv pfui_firewall Update ACK"
-            )
-        else:
-            log_info(f"PFUIDNS: Unexpected msg: {msg}")
+    # A cache report is fire-and-forget, so it waits for nothing: holding the
+    # answer for an acknowledgement is what BLOCKING asks for, and this is not it
+    reply = udp_transmit(
+        soc, data, ip, port, pfui_cfg["UDP_RETRY"], wait_for_ack=blocking
+    )
+    if blocking:
+        confirmed = reply == b"ACKUPDATE"
+        if not confirmed and reply == b"ACKDATA":
+            # ACKDATA only says the message decoded; the tables are updated by
+            # the time ACKUPDATE follows
+            msg = udp_receive(soc=soc, rcvbuf=64, retry=1)
+            confirmed = msg == b"ACKUPDATE"
+            if not confirmed:
+                log_err(f"PFUIDNS: {ip}:{port} did not confirm the update: {msg!r}")
+        breaker_record(f"{ip}:{port}", ok=confirmed)
 
     # close sender udp socket
     soc.close()
@@ -358,9 +370,9 @@ def stream_transmit_close(data, family, address, target, blocking):
                 log_err(
                     f"PFUIDNS: {target} did not confirm the update: {reply!r}"
                 )
-        elif sent:
-            # Non-blocking: delivery is the only thing observable from here
-            breaker_record(target, ok=True)
+        # A non-blocking send records nothing: the firewall has not answered
+        # yet, and counting it a success cleared the failures the blocking path
+        # was accumulating, so the breaker could never open
     except TIMEOUT:
         breaker_record(target, ok=False)
         log_err(
@@ -490,19 +502,26 @@ def transmit_all(pfui_dict, blocking=True):
 def inplace_cache_callback(
     qinfo, qstate, rep, rcode, edns, opt_list_out, region, **kwargs
 ):
-    """pythonmod: Inplace callback function for cache responses."""
-    if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
-        log_info("pythonmod: cache_callback called - answering from cache.")
+    """pythonmod: Inplace callback function for cache responses.
 
-    if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
-        log_info(
-            f"Cache data - qinfo: {qinfo}, qstate: {qstate}, rep: {rep}, rcode: {rcode}, edns: {edns}, opt_list_out: {opt_list_out}, region: {region}"
-        )
+    Returns True, and never raises: an exception here discards the cache hit,
+    and the callback's return value is read as a boolean, so returning nothing
+    leaves an error pending for the next query to fail on.
+    """
+    try:
+        if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
+            log_info("pythonmod: cache_callback called - answering from cache.")
+            log_info(
+                f"Cache data - qinfo: {qinfo}, qstate: {qstate}, rep: {rep}, rcode: {rcode}, edns: {edns}, opt_list_out: {opt_list_out}, region: {region}"
+            )
 
-    if rep is not None:
-        pfui_msg = read_rr(rep, qinfo.qname_str, from_cache=True)
-        if pfui_msg:
-            transmit_all(pfui_msg, blocking=False)
+        if rep is not None:
+            pfui_msg = read_rr(rep, qinfo.qname_str, from_cache=True)
+            if pfui_msg:
+                transmit_all(pfui_msg, blocking=False)
+    except Exception as exc:
+        log_err(f"PFUIDNS: {describe_exception(exc)}")
+    return True
 
 
 def init(id, cfg):
@@ -532,6 +551,10 @@ def init_standard(id, env):
         )
 
     if not register_inplace_cb_reply_cache(inplace_cache_callback, env, id):
+        log_err(
+            "PFUIDNS: could not register the cache callback; cache hits will "
+            "whitelist nothing. Refusing to start."
+        )
         return False
     return True
 
@@ -617,7 +640,13 @@ def operate(id, event, qstate, qdata):
     except Exception as exc:
         log_err(f"PFUIDNS: {describe_exception(exc)}")
         try:
-            qstate.ext_state[id] = MODULE_WAIT_MODULE
+            # A finished query must not be handed back for more work: the mesh
+            # reads MODULE_WAIT_MODULE as "advance to the next module", which
+            # re-enters one that has already run
+            if event == MODULE_EVENT_MODDONE:
+                qstate.ext_state[id] = MODULE_FINISHED
+            else:
+                qstate.ext_state[id] = MODULE_WAIT_MODULE
         except Exception:
             pass
         return True
@@ -636,7 +665,7 @@ def _operate(id, event, qstate, qdata):
         pfui_msg = None
         if qstate.return_msg:
             if pfui_cfg["LOGGING"] and pfui_cfg["LOG_LEVEL"] == "DEBUG":
-                if qstate.return_msg.qinfo:
+                if qstate.return_msg.rep and qstate.return_msg.qinfo:
                     logger(qstate)
             if qstate.return_msg.rep:
                 pfui_msg = read_rr(qstate.return_msg.rep, qstate.qinfo.qname_str)
@@ -699,6 +728,28 @@ def load_config(location=CONFIG_LOCATION):
     cfg = safe_load(open(location)) or {}
     for key, value in CONFIG_DEFAULTS.items():
         cfg.setdefault(key, value)
+
+    # A key present but empty parses as None, which setdefault cannot replace
+    cfg["FIREWALLS"] = cfg["FIREWALLS"] or []
+    if not isinstance(cfg["FIREWALLS"], list):
+        raise ValueError(f"FIREWALLS must be a list, not {cfg['FIREWALLS']!r}")
+
+    # Coerced once here so no send path can be handed a string or a None: those
+    # raise from inside socket calls, where the failure is a resolver fault
+    # rather than the configuration error it really is
+    for key, cast in (
+        ("SOCKET_TIMEOUT", float),
+        ("UDP_ACK_TIMEOUT", float),
+        ("BREAKER_COOLOFF", float),
+        ("UDP_RETRY", int),
+        ("BREAKER_FAILURES", int),
+        ("DEFAULT_PORT", int),
+    ):
+        try:
+            cfg[key] = cast(cfg[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a number, not {cfg[key]!r}") from None
+
     cfg["SOCKET_PROTO"] = str(cfg["SOCKET_PROTO"]).strip().upper()
     if cfg["SOCKET_PROTO"] not in ("TCP", "UDP"):
         raise ValueError(
@@ -716,6 +767,13 @@ def load_config(location=CONFIG_LOCATION):
                 f"FIREWALLS[{index}] sets both SOCKET ({socket_path}) and HOST "
                 f"({host}); one firewall is reached one way or the other"
             )
+        if host and fw.get("PORT") is not None:
+            try:
+                int(fw["PORT"])
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"FIREWALLS[{index}] PORT must be a number, not {fw['PORT']!r}"
+                ) from None
         if socket_path and not str(socket_path).startswith("/"):
             raise ValueError(
                 f"FIREWALLS[{index}] SOCKET must be an absolute path, "
