@@ -260,6 +260,116 @@ few minutes and needs Docker; nothing runs on the host. CI runs it against the
 latest release, and against upstream `master` for information only.
 
 ------
+<a name="configexamples"></a>
+### Configuration examples;
+
+Two transports carry the same messages and the same replies. Pick per firewall:
+a **TCP socket** when the resolver is on another machine, a **unix socket** when
+it is on the firewall itself. A resolver can use both at once.
+
+#### TCP socket — resolver on another host
+
+Firewall, `/etc/pfui_firewall.yml`:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_LISTEN: 10.10.1.254    # inside interface IP, never 0.0.0.0
+SOCKET_PROTO: TCP
+SOCKET_PORT: 10001
+COMPRESS: True                # must match the resolver
+REDIS_HOST: 127.0.0.1
+REDIS_PORT: 6379
+REDIS_DB: 0
+SCAN_PERIOD: 60
+TTL_MULTIPLIER: 4
+CTL: IOCTL
+DEVPF: /dev/pf
+AF4_TABLE: pfui_ipv4_domains
+AF4_FILE: /var/db/pfui/ipv4_domains
+AF6_TABLE: pfui_ipv6_domains
+AF6_FILE: /var/db/pfui/ipv6_domains
+```
+
+Resolver, `/var/unbound/etc/pfui_unbound.yml`:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_PROTO: TCP
+SOCKET_TIMEOUT: 3
+COMPRESS: True                # must match the firewall
+BLOCKING: True                # hold the answer until the IPs are in the table
+DEFAULT_PORT: 10001
+FIREWALLS:
+  - HOST: 10.10.1.254
+    PORT: 10001
+```
+
+This transport is unauthenticated, so restrict the port to the known resolvers
+in `pf.conf`:
+```
+pass in quick on $if_inside proto tcp from <int_dns> to (self) port { 10001 }
+```
+
+#### Unix socket — resolver on the firewall itself
+
+Faster than loopback TCP, because the client opens one connection per DNS
+answer: no handshake, no `TIME_WAIT` entry, no ephemeral port per reply. It also
+needs no `pf.conf` rule, because there is no packet to filter.
+
+Firewall, `/etc/pfui_firewall.yml` — as above, but with the socket added and
+`SOCKET_LISTEN` omitted if no remote resolver needs this firewall:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
+SOCKET_UNIX_GROUP: _pfui      # the resolver's account must be a member
+COMPRESS: True
+REDIS_HOST: 127.0.0.1
+REDIS_PORT: 6379
+REDIS_DB: 0
+SCAN_PERIOD: 60
+TTL_MULTIPLIER: 4
+CTL: IOCTL
+DEVPF: /dev/pf
+AF4_TABLE: pfui_ipv4_domains
+AF4_FILE: /var/db/pfui/ipv4_domains
+AF6_TABLE: pfui_ipv6_domains
+AF6_FILE: /var/db/pfui/ipv6_domains
+```
+
+Resolver, `/var/unbound/etc/pfui_unbound.yml`:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_TIMEOUT: 3
+COMPRESS: True
+BLOCKING: True
+FIREWALLS:
+  - SOCKET: /var/run/pfui/pfui_firewall.sock
+```
+
+Access control is the filesystem here rather than PF: see
+[Same-host deployment](#samehost).
+
+#### Both at once — a CARP node with its own resolver
+
+The firewall serves the socket and the network listener together, and the
+resolver names one entry per firewall. `SOCKET_PROTO` applies only to the
+`HOST` entries.
+
+Firewall: set both `SOCKET_UNIX` and `SOCKET_LISTEN`. Resolver:
+```yaml
+FIREWALLS:
+  - SOCKET: /var/run/pfui/pfui_firewall.sock   # this host, over the local socket
+  - HOST: 10.10.1.253                          # the CARP peer, over the network
+    PORT: 10001
+```
+
+Every key not shown takes its default; both daemons list them with comments in
+[server-python/pfui_firewall.yml](server-python/pfui_firewall.yml) and
+[client-unbound/pfui_unbound.yml](client-unbound/pfui_unbound.yml).
+
+------
 <a name="samehost"></a>
 ### Same-host deployment (local socket);
 
