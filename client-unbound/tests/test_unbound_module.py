@@ -913,3 +913,113 @@ def test_every_hint_names_a_documented_refusal(plugin):
     protocol = (COMPONENT.parent / "protocol" / "PROTOCOL.md").read_text()
     for reply in plugin.REFUSAL_HINTS:
         assert f"`{reply.decode()}`" in protocol, reply
+
+
+def test_the_cache_callback_never_blocks_the_answer(plugin, monkeypatch):
+    """A cached positive answer implies access was already allowed by the rr
+    report that released it, so a cache report only resets the TTL. Blocking on
+    it would add a round trip to the most common query for no access decision."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR", "BLOCKING": True}
+    monkeypatch.setattr(plugin, "read_rr",
+                        lambda *a, **k: {"kind": "cache", "qname": "x.",
+                                         "AF4": [["1.1.1.1", 60]], "AF6": []})
+    seen = []
+    monkeypatch.setattr(plugin, "transmit_all",
+                        lambda msg, blocking=True: seen.append(blocking))
+    qinfo = type("Q", (), {"qname_str": "x."})()
+    plugin.inplace_cache_callback(qinfo, None, object(), 0, None, None, None)
+    assert seen == [False], f"cache report waited for an ACK: blocking={seen}"
+
+
+def test_log_level_is_a_threshold_not_an_equality_test(plugin):
+    """LOG_LEVEL: ERROR emitted per-query INFO output, because the only test of
+    the value anywhere was == "DEBUG" and every other line was gated on LOGGING
+    alone."""
+    plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": "ERROR"}
+    assert plugin.log_at("DEBUG") is False
+    assert plugin.log_at("INFO") is False
+
+    plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": "INFO"}
+    assert plugin.log_at("INFO") is True
+    assert plugin.log_at("DEBUG") is False, "INFO must not turn DEBUG on"
+
+    plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": "DEBUG"}
+    assert plugin.log_at("DEBUG") is True
+    assert plugin.log_at("INFO") is True, "DEBUG must include everything above it"
+
+
+def test_logging_false_silences_every_level(plugin):
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "DEBUG"}
+    assert plugin.log_at("DEBUG") is False
+    assert plugin.log_at("INFO") is False
+
+
+def test_log_at_survives_an_absent_or_partial_config(plugin):
+    """Called from module-level functions that Unbound may reach before the
+    __main__ block has run, where a KeyError would fail the query."""
+    saved = getattr(plugin, "pfui_cfg", None)
+    try:
+        if hasattr(plugin, "pfui_cfg"):
+            del plugin.pfui_cfg
+        assert plugin.log_at("INFO") is False        # no config: stay quiet
+        plugin.pfui_cfg = None
+        assert plugin.log_at("INFO") is False
+        plugin.pfui_cfg = {"LOGGING": True}          # no LOG_LEVEL at all
+        assert plugin.log_at("INFO") is False        # defaults to ERROR
+        plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": "wArN"}
+        assert plugin.log_at("INFO") is False        # unknown reads as ERROR
+        plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": " debug "}
+        assert plugin.log_at("DEBUG") is True        # case and space tolerated
+    finally:
+        if saved is not None:
+            plugin.pfui_cfg = saved
+
+
+def test_a_firewall_that_never_acknowledges_is_reported_at_error_level(plugin,
+                                                                      monkeypatch):
+    """These two lines were log_info and ungated, so they printed at any level.
+    Gating them at DEBUG would have hidden a dead firewall from an operator
+    running the default LOG_LEVEL: ERROR, so they are errors instead."""
+    plugin.pfui_cfg = {"LOGGING": False, "LOG_LEVEL": "ERROR", "UDP_RETRY": 1}
+    errors, infos = [], []
+    monkeypatch.setattr(plugin, "log_err", lambda m: errors.append(m))
+    monkeypatch.setattr(plugin, "log_info", lambda m: infos.append(m))
+    monkeypatch.setattr(plugin, "udp_receive", lambda **kw: None)
+
+    class Soc:
+        def sendto(self, *a):
+            return None
+
+    assert plugin.udp_transmit(Soc(), b"x", "10.0.0.1", 10001, retry=1) is None
+    assert any("no acknowledgement" in m for m in errors), errors
+    assert infos == [], f"chatter escaped at LOG_LEVEL ERROR: {infos}"
+
+
+def test_the_breaker_reports_recovery_but_not_every_success(plugin, monkeypatch):
+    """Opening the breaker was logged at error level and closing it was silent,
+    so an operator saw a firewall leave and never saw it return. Logging every
+    success instead would put a line on the blocking path of every query."""
+    plugin.pfui_cfg = {"LOGGING": True, "LOG_LEVEL": "INFO",
+                       "BREAKER_FAILURES": 2, "BREAKER_COOLOFF": 30}
+    infos, errors = [], []
+    monkeypatch.setattr(plugin, "log_info", lambda m: infos.append(m))
+    monkeypatch.setattr(plugin, "log_err", lambda m: errors.append(m))
+    plugin._breakers.clear()
+    target = "10.0.0.1:10001"
+
+    plugin.breaker_record(target, ok=True)
+    assert infos == [], f"a healthy firewall logged per query: {infos}"
+
+    for _ in range(2):
+        plugin.breaker_record(target, ok=False)
+    assert plugin.breaker_open(target)
+    assert any("unreachable" in m for m in errors), errors
+
+    plugin.breaker_record(target, ok=True)
+    assert any("acknowledged again" in m for m in infos), infos
+    assert not plugin.breaker_open(target)
+
+    infos.clear()
+    plugin.breaker_record(target, ok=True)
+    assert infos == [], f"recovery re-reported on a healthy send: {infos}"
+    plugin._breakers.clear()
