@@ -15,6 +15,20 @@ die() {
   exit 1
 }
 
+# Install packages without ever prompting. A release's package set holds one
+# version of each package, so there is no "latest" to choose; -i only ever
+# prompts when a stem matches several flavours, and answering that from a
+# script is guesswork. Name the candidates instead and let the operator pick.
+add_pkg() {
+  local pkg
+  for pkg in "$@"; do
+    pkg_add -I "${pkg}" && continue
+    echo "PFUIFW: cannot install '${pkg}'. Candidates:" >&2
+    pkg_info -Q "${pkg}" >&2 || true
+    die "install one explicitly, Eg 'pkg_add ${pkg}-<version>'"
+  done
+}
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 HOUR=$(date +%d-%b-%H_%M)
 
@@ -41,7 +55,7 @@ if [[ -n "${PFUI_BINARY}" ]]; then
   BINARY="${PFUI_BINARY}"
 else
   echo "PFUIFW: Installing the Rust toolchain"
-  pkg_add -i rust
+  add_pkg rust
   command -v cargo >/dev/null || die "cargo not found after pkg_add rust"
 
   # / is under a gigabyte on a default disklayout, and the crate cache and
@@ -62,7 +76,7 @@ else
 fi
 
 echo "PFUIFW: Installing and Starting Redis"
-pkg_add -i redis
+add_pkg redis
 # Redis holds the whitelist that the sync loop pushes into the PF tables, so
 # anything able to write those keys can authorise egress. Keep it loopback-only.
 REDIS_CONF=/etc/redis/redis.conf

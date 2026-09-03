@@ -12,6 +12,20 @@ die() {
   exit 1
 }
 
+# Install packages without ever prompting. A release's package set holds one
+# version of each package, so there is no "latest" to choose; -i only ever
+# prompts when a stem matches several flavours, and answering that from a
+# script is guesswork. Name the candidates instead and let the operator pick.
+add_pkg() {
+  local pkg
+  for pkg in "$@"; do
+    pkg_add -I "${pkg}" && continue
+    echo "PFUIFW: cannot install '${pkg}'. Candidates:" >&2
+    pkg_info -Q "${pkg}" >&2 || true
+    die "install one explicitly, Eg 'pkg_add ${pkg}-<version>'"
+  done
+}
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 HOUR=$(date +%d-%b-%H_%M)
 
@@ -34,14 +48,14 @@ fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
   echo "PFUIFW: Installing Python3"
-  pkg_add -i python3 py3-setuptools py3-pip
+  add_pkg python3 py3-pip py3-setuptools
   which python >/dev/null
   if [[ $? != 0 ]]; then
     ln -s `which python3` /usr/local/bin/python
   fi
 
   echo "PFUIFW: Installing and Starting Redis"
-  pkg_add -i redis
+  add_pkg redis
   # Redis holds the whitelist that the sync loop pushes into the PF tables, so
   # anything able to write those keys can authorise egress. Keep it loopback-only.
   REDIS_CONF=/etc/redis/redis.conf
@@ -91,10 +105,14 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo "PFUIFW: Installing Python dependencies for the system interpreter"
   # Not a virtualenv: the daemon runs under /usr/local/bin/python3 (see its
-  # shebang), so the dependencies have to be importable there. The previous
-  # venv was never wired into the daemon and was the only place these landed.
-  python3 -m pip install -r "${DIR}/server-python/requirements.txt" \
-    || die "cannot install Python dependencies"
+  # shebang), so the dependencies have to be importable there.
+  add_pkg py3-lz4 py3-yaml py3-redis
+  # 'service' is not packaged, and the system interpreter is externally managed
+  # (PEP 668), so pip has to be told that writing to it is deliberate
+  python3 -m pip install --break-system-packages 'service>=0.6,<1' \
+    || die "cannot install the 'service' module"
+  python3 -c "import lz4.frame, yaml, redis, service" \
+    || die "dependencies are not importable by $(command -v python3)"
 
   echo "PFUIFW: Installing PFUI Firewall Service (will backup any existing pfui_firewall configuration)"
   install -m 755 -o root -g wheel "${DIR}"/server-python/pfui_firewall.py /usr/local/sbin/pfui_firewall \

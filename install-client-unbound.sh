@@ -23,6 +23,20 @@ die() {
   exit 1
 }
 
+# Install packages without ever prompting. A release's package set holds one
+# version of each package, so there is no "latest" to choose; -i only ever
+# prompts when a stem matches several flavours, and answering that from a
+# script is guesswork. Name the candidates instead and let the operator pick.
+add_pkg() {
+  local pkg
+  for pkg in "$@"; do
+    pkg_add -I "${pkg}" && continue
+    echo "PFUIDNS: cannot install '${pkg}'. Candidates:" >&2
+    pkg_info -Q "${pkg}" >&2 || true
+    die "install one explicitly, Eg 'pkg_add ${pkg}-<version>'"
+  done
+}
+
 args=("$@")
 TARGET=${args[0]}
 if [[ -z ${TARGET} ]]; then  # True if length zero
@@ -52,13 +66,8 @@ else
 fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
-  echo "PFUIDNS: Installing Python3 and dependencies"
-  pkg_add -i python3 py3-setuptools py3-pip
-  retval="$?"
-  if [ $retval -ne 0 ]; then
-    echo "* Errors trying to install Python. Please resolve and restart pfui_unbound_install.sh"
-    exit $retval
-  fi
+  echo "PFUIDNS: Installing Python3"
+  add_pkg python3
 
   which python >/dev/null
   if [[ $? != 0 ]]; then
@@ -74,17 +83,14 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo
   echo "PFUIDNS: Installing Package Dependencies"
-  # No cmake: Unbound builds with autotools, and asking for it aborts this
-  # checked block on any host where the cmake package conflicts
-  pkg_add -i swig git bash libconfig libiconv bison gawk mawk m4 gettext-runtime gettext-tools py3-openssl curl
-  retval="$?"
-  if [ $retval -ne 0 ]; then
-    echo "* Errors trying to install common dependencies. Please resolve and restart pfui_unbound_install.sh"
-    exit $retval
-  fi
+  # Base supplies the compiler, make, yacc, lex, awk, m4, libevent, expat and
+  # LibreSSL, which is what the configure flags below point at, and pkg_add
+  # resolves each package's own dependencies. Only these are missing:
+  #   swig  generates the Python module bindings
+  #   git   resolves the Unbound release tag and clones it
+  #   curl  fetches the signed source sets, when that step is taken
+  add_pkg swig git curl
 
-  echo "PFUIDNS: For the following programs, please choose the latest offered flavour"
-  pkg_add -i gcc g++ openssl sphinx
   ldconfig -mv /usr/local/lib
 
   if [[ -z ${TARGET} ]]; then  # True if length zero
@@ -155,8 +161,7 @@ echo "PFUIDNS: Installing PFUI Python dependencies"
 # On OpenBSD that means packages: the system interpreter is externally managed
 # (PEP 668) and pip refuses to write to it.
 if [[ "$OS" = "OpenBSD" ]]; then
-  # -I: an interactive pkg_add here would consume the next prompt's answer
-  pkg_add -I py3-lz4 py3-yaml || die "cannot install py3-lz4 and py3-yaml"
+  add_pkg py3-lz4 py3-yaml
 else
   python3 -m pip install -r "${DIR}/client-unbound/requirements.txt" \
     || die "cannot install Python dependencies"
