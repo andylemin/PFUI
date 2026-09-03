@@ -48,7 +48,11 @@ fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
   echo "PFUIFW: Installing Python3"
-  add_pkg python3 py3-pip py3-setuptools
+  # No python3 stem exists, only python-3.x packages with a branch each; the
+  # py3-* packages depend on the right one and bring it with them
+  add_pkg py3-pip py3-setuptools
+  command -v python3 >/dev/null \
+    || die "python3 is absent; name a branch explicitly, Eg 'pkg_add python%3.13'"
   which python >/dev/null
   if [[ $? != 0 ]]; then
     ln -s `which python3` /usr/local/bin/python
