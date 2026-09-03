@@ -164,6 +164,17 @@ fn judge(decoded: &serde_json::Value, peer: &str, log: &Logger) -> Verdict {
     }
 }
 
+/// `ip=ttl` pairs for a log line, or `none` for an empty family.
+fn records(data: &[(String, i64)]) -> String {
+    if data.is_empty() {
+        return "none".to_string();
+    }
+    data.iter()
+        .map(|(ip, ttl)| format!("{ip}={ttl}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Update PF tables, then the stores. Callers acknowledge in between: the
 /// order PF, ACKUPDATE, Redis, persist file is the latency contract.
 fn act(
@@ -187,7 +198,15 @@ fn act(
         ctx.backends.table_push(&ctx.cfg.af6_table, &ips(af6));
     }
     if ctx.log.verbose {
-        ctx.log.info(&format!("PF Table updated {af4:?}, {af6:?}"));
+        // kind is reported with the TTLs because it decides how to read them:
+        // seconds remaining under rr, an absolute expiry under cache
+        ctx.log.info(&format!(
+            "PF Table updated for {} ({}): AF4 {} AF6 {}",
+            if qname.is_empty() { "<no qname>" } else { qname },
+            kind.as_str(),
+            records(af4),
+            records(af6),
+        ));
     }
 
     ack();
