@@ -562,6 +562,21 @@ def inform_super(id, qstate, superqstate, qdata):
     return True
 
 
+def describe_exception(exc):
+    """One-line type, message and call site for an exception.
+
+    Built from the traceback object by hand because pythonmod's own reporter
+    cannot always import io to format one.
+    """
+    where = []
+    tb = exc.__traceback__
+    while tb:
+        code = tb.tb_frame.f_code
+        where.append(f"{code.co_name}:{tb.tb_lineno}")
+        tb = tb.tb_next
+    return f"{type(exc).__name__}: {exc} at {' -> '.join(where) or 'unknown'}"
+
+
 def operate(id, event, qstate, qdata):
     """
     Unbound Pythonmod Required
@@ -571,7 +586,22 @@ def operate(id, event, qstate, qdata):
     id: module identifier (integer)
     qstate: module_qstate Query state
     qdata: query_info Query data
+
+    Nothing is allowed to raise out of here: an exception reaching pythonmod
+    fails the query, so a PFUI fault would take DNS resolution with it.
     """
+    try:
+        return _operate(id, event, qstate, qdata)
+    except Exception as exc:
+        log_err(f"PFUIDNS: {describe_exception(exc)}")
+        try:
+            qstate.ext_state[id] = MODULE_WAIT_MODULE
+        except Exception:
+            pass
+        return True
+
+
+def _operate(id, event, qstate, qdata):
 
     if pfui_cfg["LOGGING"]:
         log_info(
