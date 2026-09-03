@@ -562,6 +562,28 @@ def inform_super(id, qstate, superqstate, qdata):
     return True
 
 
+# pythonmod injects these into this module's globals. strmodulevent() is not
+# used to name an event: its binding rejects anything outside 'enum module_ev'
+# with an OverflowError, and a log line must not be able to fail.
+EVENT_NAMES = (
+    "MODULE_EVENT_NEW",
+    "MODULE_EVENT_PASS",
+    "MODULE_EVENT_REPLY",
+    "MODULE_EVENT_NOREPLY",
+    "MODULE_EVENT_CAPSFAIL",
+    "MODULE_EVENT_MODDONE",
+    "MODULE_EVENT_ERROR",
+)
+
+
+def event_name(event):
+    """Name for a pythonmod event value, or the value itself if unrecognised."""
+    for name in EVENT_NAMES:
+        if globals().get(name) == event:
+            return name
+    return f"event {event!r}"
+
+
 def describe_exception(exc):
     """One-line type, message and call site for an exception.
 
@@ -604,11 +626,7 @@ def operate(id, event, qstate, qdata):
 def _operate(id, event, qstate, qdata):
 
     if pfui_cfg["LOGGING"]:
-        log_info(
-            "pythonmod: operate, id: {}, event {}".format(
-                str(id), str(strmodulevent(event))
-            )
-        )
+        log_info(f"pythonmod: operate, id: {id}, {event_name(event)}")
 
     if event == MODULE_EVENT_MODDONE:
         if pfui_cfg["LOGGING"]:
