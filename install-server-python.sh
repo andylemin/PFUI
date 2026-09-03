@@ -105,10 +105,19 @@ if [[ "$OS" = "OpenBSD" ]]; then
     "${DIR}"/server-python/pfui/pf_ioctl.py /usr/local/sbin/pfui/ \
     || die "cannot install the pfui modules"
 
-  [ -f /etc/pfui_firewall.yml ] && cp -p /etc/pfui_firewall.yml "/etc/pfui_firewall.yml.${HOUR}"
-  # root-owned: the daemon only reads this, and CTL: PFCTL makes it a command source
-  install -m 644 -o root -g wheel "${DIR}"/server-python/pfui_firewall.yml /etc/pfui_firewall.yml
-  echo "PFUIFW: PFUI_Firewall default configuration file located at '/etc/pfui_firewall.yml' (please configure)"
+  # An existing config is kept so an upgrade does not disturb a running
+  # deployment; only a first install lays down the example
+  if [ -f /etc/pfui_firewall.yml ]; then
+    cp -p /etc/pfui_firewall.yml "/etc/pfui_firewall.yml.${HOUR}"
+    echo "PFUIFW: Keeping the existing /etc/pfui_firewall.yml"
+    echo "PFUIFW: (backup at /etc/pfui_firewall.yml.${HOUR}; compare it against"
+    echo "        ${DIR}/server-python/pfui_firewall.yml for keys added since)"
+  else
+    # root-owned: the daemon only reads this, and CTL: PFCTL makes it a command source
+    install -m 644 -o root -g wheel "${DIR}"/server-python/pfui_firewall.yml \
+      /etc/pfui_firewall.yml || die "cannot install the configuration file"
+    echo "PFUIFW: Default configuration installed at '/etc/pfui_firewall.yml' (please configure)"
+  fi
   # root-owned: rcctl runs this as root, and a file's owner can always chmod it
   install -m 555 -o root -g wheel "${DIR}"/server-python/rc.d/pfui_firewall /etc/rc.d/pfui_firewall \
     || die "cannot install the rc.d script"

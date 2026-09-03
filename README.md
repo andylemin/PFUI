@@ -93,7 +93,13 @@ adds latency). A fully recursive DNS query can take tens to hundreds of millisec
 
 ------
 ## PFUI Installation
-Tested on OpenBSD from 7.0 (Unbound 1.16, Python 3.8) to 7.4 (Unbound 1.18, Python 3.10).
+Tested on OpenBSD from 7.0 (Unbound 1.16, Python 3.8) to 7.9 (Unbound 1.26, Python 3.13).
+
+**Re-running an installer upgrades the code and leaves your configuration
+alone.** `/etc/pfui_firewall.yml`, `pfui_unbound.yml` and the resolver's own
+`pfui_unbound.conf` are kept as they are, with a timestamped backup taken and
+the shipped example named so you can diff it for keys added since. Only a first
+install, where no config exists yet, lays down the examples.
 
 `install-client-unbound.sh` builds the **latest Unbound release** by default: it
 resolves the newest `release-*` tag from NLnet Labs at install time rather than
