@@ -28,9 +28,9 @@ def complete():
     return {
         "SOCKET_LISTEN": "10.10.1.254",
         "AF4_TABLE": "pfui_ipv4_domains",
-        "AF4_FILE": "/var/spool/pfui/pfui_ipv4_domains",
+        "AF4_FILE": "/var/db/pfui/ipv4_domains",
         "AF6_TABLE": "pfui_ipv6_domains",
-        "AF6_FILE": "/var/spool/pfui/pfui_ipv6_domains",
+        "AF6_FILE": "/var/db/pfui/ipv6_domains",
     }
 
 

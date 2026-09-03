@@ -1,0 +1,41 @@
+#!/bin/ksh
+#
+# rc.d(8) script for PFUI_Firewall (Rust daemon)
+#
+# The daemon runs in the foreground and takes no verbs, so rc.subr's default
+# start/stop/check handle it: rc_bg backgrounds it, and pexp is what pgrep
+# matches. This replaces the Python setup's pidfile/verb model.
+
+daemon="/usr/local/sbin/pfui_firewall"
+daemon_user="_pfui_firewall"
+
+. /etc/rc.d/rc.subr
+
+rc_bg=YES
+pexp="${daemon}.*"
+
+rc_pre() {
+	# /var/run is root-owned, and OpenBSD's MAKEDEV resets /dev/pf's mode on
+	# release upgrades, so both are re-established on every start
+	#
+	# Group _pfui when it exists: the local socket is created in this directory
+	# and, with BSD group inheritance, takes the directory's group. 0750 also
+	# means only that group can traverse to reach the socket at all, so the
+	# directory is a second gate in front of the socket's own 0660. Falls back to
+	# the old ownership so an install predating the _pfui group still starts.
+	if groupinfo _pfui >/dev/null 2>&1; then
+		install -d -o _pfui_firewall -g _pfui -m 750 /var/run/pfui
+	else
+		install -d -o _pfui_firewall -g _pfui_firewall -m 755 /var/run/pfui
+	fi
+	chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf
+}
+
+# Must stay: rc.subr's default rc_reload sends SIGHUP, which the daemon
+# deliberately ignores, so a reload would silently do nothing.
+rc_reload() {
+	echo "PFUIFW: reload unsupported, use 'rcctl restart pfui_firewall'"
+	return 1
+}
+
+rc_cmd $1

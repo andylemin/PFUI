@@ -25,9 +25,11 @@ Ie, Users cannot bypass an administrator's DNS blocking attempts using 'DNS over
 | [protocol/](protocol/) | The wire protocol: specification, conformance vectors, and the Python reference implementation shared by clients and servers |
 | [client-unbound/](client-unbound/) | PFUI client as an Unbound pythonmod plugin |
 | [server-python/](server-python/) | PFUI server for OpenBSD PF, in Python |
+| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon. Functionally complete; OpenBSD live validation pending |
 | [server-c/](server-c/) | PFUI server in C. Framing only so far |
 | `install-client-unbound.sh` | Installs the Unbound client on a resolver |
 | `install-server-python.sh` | Installs the Python server on a PF firewall |
+| `install-server-rust.sh` | Installs the Rust server on a PF firewall (builds with the ports rustc) |
 | [examples/pf.conf](examples/pf.conf) | Example PF ruleset, applies to any server implementation |
 
 Clients and servers share only the protocol. Adding support for another resolver
@@ -91,7 +93,13 @@ adds latency). A fully recursive DNS query can take tens to hundreds of millisec
 
 ------
 ## PFUI Installation
-Tested on OpenBSD from 7.0 (Unbound 1.16, Python 3.8) to 7.4 (Unbound 1.18, Python 3.10).
+Tested on OpenBSD from 7.0 (Unbound 1.16, Python 3.8) to 7.9 (Unbound 1.26, Python 3.13).
+
+**Re-running an installer upgrades the code and leaves your configuration
+alone.** `/etc/pfui_firewall.yml`, `pfui_unbound.yml` and the resolver's own
+`pfui_unbound.conf` are kept as they are, with a timestamped backup taken and
+the shipped example named so you can diff it for keys added since. Only a first
+install, where no config exists yet, lays down the examples.
 
 `install-client-unbound.sh` builds the **latest Unbound release** by default: it
 resolves the newest `release-*` tag from NLnet Labs at install time rather than
@@ -256,6 +264,116 @@ module, so that build is PFUI's alone, and pythonmod API drift in a new Unbound
 release would otherwise only show up when someone ran the installer. It takes a
 few minutes and needs Docker; nothing runs on the host. CI runs it against the
 latest release, and against upstream `master` for information only.
+
+------
+<a name="configexamples"></a>
+### Configuration examples;
+
+Two transports carry the same messages and the same replies. Pick per firewall:
+a **TCP socket** when the resolver is on another machine, a **unix socket** when
+it is on the firewall itself. A resolver can use both at once.
+
+#### TCP socket — resolver on another host
+
+Firewall, `/etc/pfui_firewall.yml`:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_LISTEN: 10.10.1.254    # inside interface IP, never 0.0.0.0
+SOCKET_PROTO: TCP
+SOCKET_PORT: 10001
+COMPRESS: True                # must match the resolver
+REDIS_HOST: 127.0.0.1
+REDIS_PORT: 6379
+REDIS_DB: 0
+SCAN_PERIOD: 60
+TTL_MULTIPLIER: 4
+CTL: IOCTL
+DEVPF: /dev/pf
+AF4_TABLE: pfui_ipv4_domains
+AF4_FILE: /var/db/pfui/ipv4_domains
+AF6_TABLE: pfui_ipv6_domains
+AF6_FILE: /var/db/pfui/ipv6_domains
+```
+
+Resolver, `/var/unbound/etc/pfui_unbound.yml`:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_PROTO: TCP
+SOCKET_TIMEOUT: 3
+COMPRESS: True                # must match the firewall
+BLOCKING: True                # hold the answer until the IPs are in the table
+DEFAULT_PORT: 10001
+FIREWALLS:
+  - HOST: 10.10.1.254
+    PORT: 10001
+```
+
+This transport is unauthenticated, so restrict the port to the known resolvers
+in `pf.conf`:
+```
+pass in quick on $if_inside proto tcp from <int_dns> to (self) port { 10001 }
+```
+
+#### Unix socket — resolver on the firewall itself
+
+Faster than loopback TCP, because the client opens one connection per DNS
+answer: no handshake, no `TIME_WAIT` entry, no ephemeral port per reply. It also
+needs no `pf.conf` rule, because there is no packet to filter.
+
+Firewall, `/etc/pfui_firewall.yml` — as above, but with the socket added and
+`SOCKET_LISTEN` omitted if no remote resolver needs this firewall:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock
+SOCKET_UNIX_GROUP: _pfui      # the resolver's account must be a member
+COMPRESS: True
+REDIS_HOST: 127.0.0.1
+REDIS_PORT: 6379
+REDIS_DB: 0
+SCAN_PERIOD: 60
+TTL_MULTIPLIER: 4
+CTL: IOCTL
+DEVPF: /dev/pf
+AF4_TABLE: pfui_ipv4_domains
+AF4_FILE: /var/db/pfui/ipv4_domains
+AF6_TABLE: pfui_ipv6_domains
+AF6_FILE: /var/db/pfui/ipv6_domains
+```
+
+Resolver, `/var/unbound/etc/pfui_unbound.yml`:
+```yaml
+LOGGING: False
+LOG_LEVEL: ERROR
+SOCKET_TIMEOUT: 3
+COMPRESS: True
+BLOCKING: True
+FIREWALLS:
+  - SOCKET: /var/run/pfui/pfui_firewall.sock
+```
+
+Access control is the filesystem here rather than PF: see
+[Same-host deployment](#samehost).
+
+#### Both at once — a CARP node with its own resolver
+
+The firewall serves the socket and the network listener together, and the
+resolver names one entry per firewall. `SOCKET_PROTO` applies only to the
+`HOST` entries.
+
+Firewall: set both `SOCKET_UNIX` and `SOCKET_LISTEN`. Resolver:
+```yaml
+FIREWALLS:
+  - SOCKET: /var/run/pfui/pfui_firewall.sock   # this host, over the local socket
+  - HOST: 10.10.1.253                          # the CARP peer, over the network
+    PORT: 10001
+```
+
+Every key not shown takes its default; both daemons list them with comments in
+[server-python/pfui_firewall.yml](server-python/pfui_firewall.yml) and
+[client-unbound/pfui_unbound.yml](client-unbound/pfui_unbound.yml).
 
 ------
 <a name="samehost"></a>

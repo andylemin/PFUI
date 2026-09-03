@@ -36,6 +36,27 @@ jobs:
       - name: Build and run protocol vectors
         run: make -C server-c test
 
+  server-rust:
+    # Runs on the exact rustc OpenBSD-stable ports ships (rust-version in
+    # Cargo.toml), so post-MSRV code fails here rather than on the firewall.
+    # Both vector suites run inside cargo test.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server-rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin the OpenBSD ports toolchain
+        run: |
+          rustup toolchain install 1.94 --profile minimal -c clippy -c rustfmt
+          rustup default 1.94
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+
   unbound-container:
     # The only job that answers "does Unbound still build with the Python module,
     # and does its pythonmod still call PFUI's entry points". Everything else
@@ -67,4 +88,4 @@ jobs:
       - name: Syntax-check the rc.d scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ksh
-          for f in client-unbound/rc.d/* server-python/rc.d/*; do ksh -n "$f"; done
+          for f in client-unbound/rc.d/* server-python/rc.d/* server-rust/rc.d/*; do ksh -n "$f"; done

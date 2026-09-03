@@ -163,7 +163,9 @@ spoofed.
 `sync_pf_table` shells out to `pfctl` once per `SCAN_PERIOD` to read the current
 table. It is not on the per-query hot path, so the subprocess cost is accepted.
 Replacing it needs a `DIOCRGETADDRS` implementation, which belongs with the
-other ioctl structs; deferred, not forgotten.
+other ioctl structs; deferred, not forgotten. The Rust daemon closes this
+deferral: under `CTL: IOCTL` it reads the table with `DIOCRGETADDRS`, and the
+subprocess survives only as the `CTL: PFCTL` path and the ioctl-error fallback.
 
 ## No live configuration reload
 
@@ -238,3 +240,77 @@ mismatched pair fails closed in either direction.
 `chroot: ""` in the shipped resolver config. `client-unbound/pfui_unbound.py` imports `lz4` and
 `yaml` at module load, and those would have to exist inside the chroot. Revisit
 only alongside a plan for the module's dependencies.
+
+## The second full server is Rust, not C
+
+`server-rust/` is a drop-in replacement for the Python daemon: same config
+file, same Redis schema, same reply strings, same rc.d service name, same
+binary path. C's only real edge was zero-package builds from base clang;
+Rust buys memory safety on the one component that parses unauthenticated
+network input and writes PF tables, serde for the config and payloads, a
+test framework that carried the whole Python suite across, and cheap
+`unveil(2)`/`pledge(2)`. `server-c/` stays as the framing cross-check; its
+retirement is a separate decision, taken only after the Rust daemon passes
+the same vectors in production use.
+
+The daemon is plain threads, no async runtime: the Python design (an accept
+thread per listener plus a bounded worker pool shedding beyond twice
+MAX_WORKERS) maps onto std threads exactly, and an async runtime on a Rust
+tier-3 target buys risk for nothing this daemon does.
+
+## The Rust daemon keeps Redis
+
+An in-process expiry store would drop the Redis dependency but change
+crash-recovery semantics: today a restarted daemon inherits the whitelist
+Redis kept, and the persist files only cover PF reloads, not expiry state.
+Parity first; an in-process store is its own decision if ever taken.
+
+## The Rust daemon runs foreground under rc_bg
+
+No fork, no pidfile: rc.d backgrounds it (`rc_bg=YES`) and rc.subr's
+pexp/pgrep model owns check/stop. This replaces the Python setup's
+pidfile/verb model (its rc.d routes start/stop/check through the daemon's
+own verbs) and deletes the third-party daemonisation dependency rather than
+porting it. `rcctl reload` still refuses: the daemon ignores SIGHUP, so a
+reload would silently do nothing.
+
+## Routability is an explicit prefix table
+
+The Rust validator rejects by a fixed RFC 6890-derived prefix list rather
+than a stdlib `is_global()`: Rust's is nightly-only, and CPython's own
+answer has shifted across versions (CVE-2024-4032). Parity with the Python
+daemon is one-directional — everything Python rejects is rejected, and a few
+rows reject more (the registry carve-outs inside 192.0.0/24 and 2001::/23,
+plus 192.88.99/24, 64:ff9b::/96, fec0::/10 and ::/96), which only refuses
+extra egress. Accepting anything Python rejected is a bug, and the test
+suite pins a reject/accept pair on every table row.
+
+## Addresses are canonicalised everywhere
+
+Redis keys, PF pushes and table reads must agree on IPv6 spelling: before
+canonicalisation existed, `sync_pf_table` deleted and re-added the same
+IPv6 address forever, because the stored key and `pfctl -T show` spelled it
+differently. Both daemons canonicalise on ingress (Python via
+`str(ip_address(...))`, Rust via RFC 5952 display), and the Rust
+`DIOCRGETADDRS` reader converts kernel entries back through the same
+formatter for the same reason.
+
+## serde_yaml stays pinned despite its archive status
+
+The config loader uses serde_yaml 0.9, archived upstream but frozen-stable
+with a large install base. If it ever breaks, `serde_yaml_ng` is the
+recorded swap; the loader's coercive behaviour (numeric strings parse,
+unknown keys ignored) is what the tests pin, not the parser.
+
+## pledge comes last, after an unpledged baseline
+
+`unveil(2)` is unconditional in the Rust daemon. `pledge(2)` is sequenced
+after everything else works: the full OpenBSD validation runs and passes on
+an unpledged daemon first, then pledge is enabled and the identical pass is
+repeated. A pledge violation kills the process with SIGABRT, so any promise
+gap during bring-up would be indistinguishable from a daemon bug; sequencing
+it last makes every kill in the pledged pass attributable to the pledge.
+Whether the `pf` promise covers the table-address ioctls decides the final
+shape: covered means a pledged daemon, not covered means unveil-only with a
+privsep follow-up (a pledged network parent feeding a small PF-writer child
+over a socketpair).

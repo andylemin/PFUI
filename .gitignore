@@ -6,6 +6,10 @@ build/
 dist/
 *.egg-info/
 
+# Cargo build output. Cargo.lock IS committed: the daemon is a binary, and the
+# installer builds it with --locked
+target/
+
 # The installer creates a virtualenv here if run from the repo root
 pfui_firewall/
 

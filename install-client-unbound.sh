@@ -74,7 +74,9 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo
   echo "PFUIDNS: Installing Package Dependencies"
-  pkg_add -i swig git bash cmake libconfig libiconv bison gawk mawk m4 gettext-runtime gettext-tools py3-openssl curl
+  # No cmake: Unbound builds with autotools, and asking for it aborts this
+  # checked block on any host where the cmake package conflicts
+  pkg_add -i swig git bash libconfig libiconv bison gawk mawk m4 gettext-runtime gettext-tools py3-openssl curl
   retval="$?"
   if [ $retval -ne 0 ]; then
     echo "* Errors trying to install common dependencies. Please resolve and restart pfui_unbound_install.sh"
@@ -146,10 +148,23 @@ fi
 
 echo
 echo "PFUIDNS: Installing PFUI Python dependencies"
-# The resolver runs unchrooted (chroot: "" in pfui_unbound.conf), so the module
-# imports these from the system interpreter's site-packages
-python3 -m pip install -r "${DIR}/client-unbound/requirements.txt" \
-  || die "cannot install Python dependencies"
+# The resolver runs unchrooted (chroot: "" in pfui_unbound.conf) and imports
+# these through its embedded interpreter, which is the system one, so they have
+# to be installed for that interpreter rather than into a virtualenv.
+#
+# On OpenBSD that means packages: the system interpreter is externally managed
+# (PEP 668) and pip refuses to write to it.
+if [[ "$OS" = "OpenBSD" ]]; then
+  # -I: an interactive pkg_add here would consume the next prompt's answer
+  pkg_add -I py3-lz4 py3-yaml || die "cannot install py3-lz4 and py3-yaml"
+else
+  python3 -m pip install -r "${DIR}/client-unbound/requirements.txt" \
+    || die "cannot install Python dependencies"
+fi
+# The interpreter the resolver embeds must be able to import these, or the
+# module fails at resolver start
+python3 -c "import lz4.frame, yaml" \
+  || die "lz4 and yaml are not importable by $(command -v python3)"
 
 if [[ "$OS" = "OpenBSD" ]]; then
   if [ ! -d "${TARGET}" ]; then
@@ -216,14 +231,19 @@ if [[ "$OS" = "OpenBSD" ]]; then
 
   echo "PFUIDNS: Installing PFUI_Unbound and Configuration (Python Module for Unbound)"
 
-  # Install PFUI_Unbound module example configuration
+  # An existing config is kept so an upgrade does not disturb a running
+  # resolver; only a first install lays down the example
   echo
-  read -p "Would you like to install the example pfui_unbound.yml (existing will be backed up) y/n: " yn
-  if [[ "$yn" = "y" ]]; then
-    [ -f "${TARGET}/pfui_unbound.yml" ] && mv "${TARGET}/pfui_unbound.yml" "${TARGET}/pfui_unbound.yml.${HOUR}"
-    install -m 644 -o root -g wheel "${DIR}"/client-unbound/pfui_unbound.yml ${TARGET}/pfui_unbound.yml
+  if [ -f "${TARGET}/pfui_unbound.yml" ]; then
+    cp -p "${TARGET}/pfui_unbound.yml" "${TARGET}/pfui_unbound.yml.${HOUR}"
+    echo "PFUIDNS: Keeping the existing ${TARGET}/pfui_unbound.yml"
+    echo "PFUIDNS: (backup at ${TARGET}/pfui_unbound.yml.${HOUR}; compare it against"
+    echo "         ${DIR}/client-unbound/pfui_unbound.yml for keys added since)"
+  else
+    install -m 644 -o root -g wheel "${DIR}"/client-unbound/pfui_unbound.yml \
+      "${TARGET}/pfui_unbound.yml" || die "cannot install pfui_unbound.yml"
+    echo "PFUIDNS: Default configuration installed at ${TARGET}/pfui_unbound.yml (please configure)"
   fi
-  echo "Default pfui_unbound config: ${TARGET}/pfui_unbound.yml"
 
   # Install PFUI_Unbound module script
   install -m 644 -o root -g wheel "${DIR}"/client-unbound/pfui_unbound.py ${TARGET}/pfui_unbound.py
@@ -270,16 +290,22 @@ if [[ "$OS" = "OpenBSD" ]]; then
   install -m 755 -o root -g wheel "${DIR}"/client-unbound/tools/update_dns_blocklist.sh ${TARGET}/update_dns_blocklist.sh
   echo "New scripts: ${TARGET}/update_root_hints.sh, ${TARGET}/update_dns_blocklist.sh"
 
-  # Install Unbound example configuration with PFUI_Unbound enabled
+  # The resolver's own config carries an operator's whole ruleset, so an
+  # existing one is never replaced; only a first install lays down the example
   echo
-  read -p "Would you like to install the example pfui_unbound.conf (existing will be backed up) y/n: " yn
-  if [[ "$yn" = "y" ]]; then
-    echo "Installing example ${TARGET}/pfui_unbound.conf"
-    [ -f "${TARGET}/pfui_unbound.conf" ] && mv "${TARGET}/pfui_unbound.conf" "${TARGET}/pfui_unbound.conf.${HOUR}"
+  if [ -f "${TARGET}/pfui_unbound.conf" ]; then
+    cp -p "${TARGET}/pfui_unbound.conf" "${TARGET}/pfui_unbound.conf.${HOUR}"
+    echo "PFUIDNS: Keeping the existing ${TARGET}/pfui_unbound.conf"
+    echo "PFUIDNS: (backup at ${TARGET}/pfui_unbound.conf.${HOUR}; the example is"
+    echo "         ${DIR}/client-unbound/examples/pfui_unbound.conf)"
+    echo "PFUIDNS: NB the python module must be enabled there for PFUI to send:"
+    echo "         module-config: \"validator python iterator\""
+    echo "         python: python-script: \"${TARGET}/pfui_unbound.py\""
+  else
     install -m 644 -o root -g wheel "${DIR}/client-unbound/examples/pfui_unbound.conf" \
       "${TARGET}/pfui_unbound.conf" || die "cannot install pfui_unbound.conf"
+    echo "PFUIDNS: Default resolver configuration installed at ${TARGET}/pfui_unbound.conf"
   fi
-  echo "Default pfui_unbound config: ${TARGET}/pfui_unbound.conf"
 fi
 
 echo

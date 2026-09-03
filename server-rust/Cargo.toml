@@ -1,0 +1,24 @@
+[package]
+name = "pfui_firewall"
+version = "0.1.0"
+edition = "2021"
+# The rustc in OpenBSD-stable ports (7.9 ships 1.94.1); CI runs this exact
+# toolchain so the pin is enforced, not aspirational
+rust-version = "1.94"
+description = "PFUI server for OpenBSD PF"
+license = "BSD-3-Clause"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Archived upstream but frozen-stable; serde_yaml_ng is the recorded swap if
+# it ever breaks (see DECISIONS.md)
+serde_yaml = "0.9"
+lz4_flex = "0.11"
+redis = { version = "0.27", default-features = false }
+libc = "0.2"
+tempfile = "3"
+signal-hook = "0.3"
+
+[dev-dependencies]
+hex = "0.4"
