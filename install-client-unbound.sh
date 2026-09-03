@@ -66,30 +66,28 @@ else
 fi
 
 if [[ "$OS" = "OpenBSD" ]]; then
-  echo "PFUIDNS: Installing Python3"
-  add_pkg python3
-
-  which python >/dev/null
-  if [[ $? != 0 ]]; then
-    ln -s "$(which python3)" /usr/local/bin/python
-  fi
-  PYTHONVER=$(python -V | awk '{ print $2 }')
-  PYTHONMAGOR=${PYTHONVER%%.*}
-  if [ "$PYTHONMAGOR" -lt 3 ]; then
-    echo "PFUIDNS: ERROR, Default Python Version must be Python3. Current default '$(python -V)'"
-  else
-    echo "PFUIDNS: Default Python must be Python3. Current default is ok '$(python -V)'"
-  fi
-
-  echo
   echo "PFUIDNS: Installing Package Dependencies"
   # Base supplies the compiler, make, yacc, lex, awk, m4, libevent, expat and
   # LibreSSL, which is what the configure flags below point at, and pkg_add
   # resolves each package's own dependencies. Only these are missing:
-  #   swig  generates the Python module bindings
-  #   git   resolves the Unbound release tag and clones it
-  #   curl  fetches the signed source sets, when that step is taken
-  add_pkg swig git curl
+  #   swig             generates the Python module bindings
+  #   git              resolves the Unbound release tag and clones it
+  #   curl             fetches the signed source sets, when that step is taken
+  #   py3-lz4 py3-yaml imported by the resolver module
+  #
+  # The interpreter is not named here. There is no python3 stem to ask for,
+  # only python-3.x packages with a branch each, and the py3-* packages depend
+  # on the right one.
+  add_pkg swig git curl py3-lz4 py3-yaml
+  command -v python3 >/dev/null \
+    || die "python3 is absent; name a branch explicitly, Eg 'pkg_add python%3.13'"
+
+  # configure --with-pythonmodule looks for 'python', not 'python3'
+  command -v python >/dev/null || ln -sf "$(command -v python3)" /usr/local/bin/python
+  PYTHONVER=$(python -V 2>&1 | awk '{ print $2 }')
+  [ "${PYTHONVER%%.*}" -ge 3 ] 2>/dev/null \
+    || die "the default 'python' must be Python 3, not '${PYTHONVER}'"
+  echo "PFUIDNS: Default python is ${PYTHONVER}"
 
   ldconfig -mv /usr/local/lib
 
@@ -160,9 +158,7 @@ echo "PFUIDNS: Installing PFUI Python dependencies"
 #
 # On OpenBSD that means packages: the system interpreter is externally managed
 # (PEP 668) and pip refuses to write to it.
-if [[ "$OS" = "OpenBSD" ]]; then
-  add_pkg py3-lz4 py3-yaml
-else
+if [[ "$OS" != "OpenBSD" ]]; then
   python3 -m pip install -r "${DIR}/client-unbound/requirements.txt" \
     || die "cannot install Python dependencies"
 fi
