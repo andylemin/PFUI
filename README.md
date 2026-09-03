@@ -25,7 +25,7 @@ Ie, Users cannot bypass an administrator's DNS blocking attempts using 'DNS over
 | [protocol/](protocol/) | The wire protocol: specification, conformance vectors, and the Python reference implementation shared by clients and servers |
 | [client-unbound/](client-unbound/) | PFUI client as an Unbound pythonmod plugin |
 | [server-python/](server-python/) | PFUI server for OpenBSD PF, in Python |
-| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon. Functionally complete; OpenBSD live validation pending |
+| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon, validated on OpenBSD 7.9 against a live resolver and PF |
 | [server-c/](server-c/) | PFUI server in C. Framing only so far |
 | `install-client-unbound.sh` | Installs the Unbound client on a resolver |
 | `install-server-python.sh` | Installs the Python server on a PF firewall |
@@ -118,8 +118,17 @@ see [Tests](#tests).
 ```
 pkg_add bash
 git clone https://github.com/andylemin/PFUI.git && cd PFUI
-doas ./install-server-python.sh
+doas ./install-server-rust.sh
 ```
+The Rust daemon is the default: one binary on the firewall, with no interpreter
+and no Python packages to keep in step with it. It builds with the rustc in
+ports, which the installer adds, or installs a binary you built elsewhere with
+`PFUI_BINARY=/path/to/pfui_firewall`.
+
+Where Rust is unavailable, `doas ./install-server-python.sh` installs the
+Python daemon instead. Both read the same `/etc/pfui_firewall.yml` and share
+the Redis schema, so either can take over from the other; they are mutually
+exclusive on one firewall, using the same binary path and service name.
 * 1b) Now add IP Reputation Block Lists to PF Firewalls (optional/recommended);\
 https://www.geoghegan.ca/pfbadhost.html \
 https://www.geoghegan.ca/pub/pf-badhost/latest/man/man.txt

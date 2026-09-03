@@ -15,13 +15,14 @@ use std::time::Duration;
 
 use crate::logger::Logger;
 use crate::persist;
+use crate::store::Expired;
 
 /// The stores one sync cycle reads and writes, behind a trait so tests can
 /// inject fakes. Reads return errors, since a partial read must skip the
 /// cycle; writes log internally, as the receiver's do.
 pub trait SyncOps: Send + Sync {
-    /// IPs whose Redis metadata says they are past expiry.
-    fn expired_ips(&self, table: &str) -> Result<Vec<String>, String>;
+    /// Entries whose Redis metadata says they are past expiry.
+    fn expired_entries(&self, table: &str) -> Result<Vec<Expired>, String>;
     fn db_pop(&self, table: &str, ips: &[String]) -> Result<(), String>;
     /// Every IP currently keyed in the table.
     fn db_ips(&self, table: &str) -> Result<Vec<String>, String>;
@@ -33,7 +34,7 @@ pub trait SyncOps: Send + Sync {
 
 /// Expire IPs whose metadata says they are past their TTL or cache expiry.
 fn scan_redis_db(ops: &dyn SyncOps, table: &str, log: &Logger) {
-    let expired = match ops.expired_ips(table) {
+    let expired = match ops.expired_entries(table) {
         Ok(e) => e,
         Err(e) => {
             // A transient Redis fault is retried next SCAN_PERIOD
@@ -46,11 +47,24 @@ fn scan_redis_db(ops: &dyn SyncOps, table: &str, log: &Logger) {
     if expired.is_empty() {
         return;
     }
+    let ips: Vec<String> = expired.iter().map(|e| e.ip.clone()).collect();
     if log.verbose {
-        log.info(&format!("TTL expired for IPs {expired:?}"));
+        let detail = expired
+            .iter()
+            .map(|e| {
+                let qname = if e.qname.is_empty() {
+                    "<no qname>"
+                } else {
+                    &e.qname
+                };
+                format!("{} ({})", e.ip, qname)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        log.info(&format!("TTL expired from {table}: {detail}"));
     }
-    if let Err(e) = ops.db_pop(table, &expired) {
-        log.error(&format!("Failed to delete {expired:?} from Redis: {e}"));
+    if let Err(e) = ops.db_pop(table, &ips) {
+        log.error(&format!("Failed to delete {ips:?} from Redis: {e}"));
     }
 }
 
@@ -197,7 +211,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakeOps {
-        expired: Vec<String>,
+        expired: Vec<Expired>,
         db: Vec<String>,
         table: Vec<String>,
         show_fails: bool,
@@ -216,8 +230,8 @@ mod tests {
     }
 
     impl SyncOps for FakeOps {
-        fn expired_ips(&self, _table: &str) -> Result<Vec<String>, String> {
-            self.record("expired_ips");
+        fn expired_entries(&self, _table: &str) -> Result<Vec<Expired>, String> {
+            self.record("expired_entries");
             Ok(self.expired.clone())
         }
         fn db_pop(&self, _table: &str, ips: &[String]) -> Result<(), String> {
@@ -325,9 +339,12 @@ mod tests {
     }
 
     #[test]
-    fn expired_ips_are_popped_from_redis() {
+    fn expired_entries_are_popped_from_redis() {
         let ops = FakeOps {
-            expired: strings(&["9.9.9.9"]),
+            expired: vec![Expired {
+                ip: "9.9.9.9".into(),
+                qname: "quad9.example.".into(),
+            }],
             ..Default::default()
         };
         scan_redis_db(&ops, "t", &log());

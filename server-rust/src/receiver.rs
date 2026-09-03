@@ -202,7 +202,11 @@ fn act(
         // seconds remaining under rr, an absolute expiry under cache
         ctx.log.info(&format!(
             "PF Table updated for {} ({}): AF4 {} AF6 {}",
-            if qname.is_empty() { "<no qname>" } else { qname },
+            if qname.is_empty() {
+                "<no qname>"
+            } else {
+                qname
+            },
             kind.as_str(),
             records(af4),
             records(af6),

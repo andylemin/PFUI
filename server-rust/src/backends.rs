@@ -125,7 +125,7 @@ impl Backends for RealBackends {
 }
 
 impl crate::sync::SyncOps for RealBackends {
-    fn expired_ips(&self, table: &str) -> Result<Vec<String>, String> {
+    fn expired_entries(&self, table: &str) -> Result<Vec<store::Expired>, String> {
         self.with_conn(|conn| {
             store::expired_keys(
                 &mut RedisDb(&mut *conn),
