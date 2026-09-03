@@ -7,6 +7,8 @@
 # Exported so unbound_release.sh resolves tags from the same repository this
 # clones from, rather than each holding its own copy of the URL
 export UNBOUND_REPO="https://github.com/NLnetLabs/unbound.git"
+# Read-only mirror, used only when -current sources are asked for
+OPENBSD_SRC_REPO="https://github.com/openbsd/src.git"
 # Which Unbound to build. "latest" asks the upstream repository for its newest
 # release tag at run time; set an explicit tag (Eg, UNBOUND_VERSION=release-1.25.2)
 # to pin, or "master" to build the development head. The resolution and the
@@ -35,6 +37,59 @@ add_pkg() {
     pkg_info -Q "${pkg}" >&2 || true
     die "install one explicitly, Eg 'pkg_add ${pkg}-<version>'"
   done
+}
+
+# Replace /usr/src from a signed release set. Verification happens before
+# anything is deleted: a failed fetch must not leave the host with no sources,
+# and unverified content must never be extracted as root. /usr/ports is not
+# touched, because nothing here builds from it.
+fetch_release_src() {
+  local rel="$1" f key verified=""
+  echo "PFUIDNS: Downloading OpenBSD ${rel} sources"
+  for f in src sys; do
+    curl -fsSL "https://cdn.openbsd.org/pub/OpenBSD/${rel}/${f}.tar.gz" \
+      -o "/tmp/${f}.tar.gz" || die "download of ${f}.tar.gz failed"
+  done
+  curl -fsSL "https://cdn.openbsd.org/pub/OpenBSD/${rel}/SHA256.sig" \
+    -o /tmp/SHA256.sig || die "download of SHA256.sig failed"
+
+  cd /tmp || die "cannot cd /tmp"
+  for key in /etc/signify/openbsd-*-base.pub; do
+    [ -f "${key}" ] || continue
+    if signify -Cp "${key}" -x SHA256.sig src.tar.gz sys.tar.gz >/dev/null 2>&1; then
+      verified="${key}"
+      break
+    fi
+  done
+  [ -n "${verified}" ] \
+    || die "signature verification FAILED against every key in /etc/signify; /usr/src untouched"
+  echo "PFUIDNS: Signatures verified with $(basename "${verified}")"
+
+  echo "PFUIDNS: Replacing /usr/src (can take a while)"
+  rm -rf /usr/src/*
+  cd /usr/src || die "cannot cd /usr/src"
+  tar xzf /tmp/src.tar.gz || die "extract of src.tar.gz failed"
+  tar xzf /tmp/sys.tar.gz || die "extract of sys.tar.gz failed"
+  rm -f /tmp/src.tar.gz /tmp/sys.tar.gz /tmp/SHA256.sig
+  echo "PFUIDNS: /usr/src now holds the ${rel} sources"
+}
+
+# OpenBSD publishes no src or sys tarball for snapshots, so -current sources
+# come from the read-only git mirror. Unlike a release set this is NOT signed.
+# Fetched in place because /usr/src is commonly its own filesystem and cannot
+# be replaced by a rename.
+fetch_current_src() {
+  command -v git >/dev/null || die "git is required to fetch -current sources"
+  echo "PFUIDNS: Fetching -current sources from ${OPENBSD_SRC_REPO} (UNSIGNED)"
+  cd /usr/src || die "cannot cd /usr/src"
+  rm -rf /usr/src/* /usr/src/.git
+  git init -q . || die "cannot initialise a repository in /usr/src"
+  git remote add origin "${OPENBSD_SRC_REPO}" || die "cannot add the remote"
+  git fetch -q --depth 1 origin master || die "cannot fetch -current sources"
+  git checkout -q -f FETCH_HEAD || die "cannot check out the fetched sources"
+  [ -f /usr/src/usr.sbin/unbound/Makefile.bsd-wrapper ] \
+    || die "the fetched tree has no usr.sbin/unbound/Makefile.bsd-wrapper"
+  echo "PFUIDNS: /usr/src now holds -current sources"
 }
 
 args=("$@")
@@ -97,50 +152,31 @@ if [[ "$OS" = "OpenBSD" ]]; then
   fi
 
   echo
-  echo "Would you like to update the OpenBSD System and Ports source trees; /usr/ports, /usr/src, /usr/src"
-  echo "WARNING: this DELETES /usr/ports/* and /usr/src/* after verifying the"
-  echo "         signed replacements. Any local changes in those trees are lost."
-  read -p "Type 'yes' to proceed, anything else to skip: " yn
-  [ "$yn" = "yes" ] && yn="y"
-  if [[ "$yn" = "y" ]]; then
-    REL=$(uname -r)
-    echo "PFUIDNS: Downloading OpenBSD ${REL} sources to /tmp"
-    for f in ports src sys; do
-      curl -fsSL "https://cdn.openbsd.org/pub/OpenBSD/${REL}/${f}.tar.gz" \
-        -o "/tmp/${f}.tar.gz" || die "download of ${f}.tar.gz failed"
-    done
-    curl -fsSL "https://cdn.openbsd.org/pub/OpenBSD/${REL}/SHA256.sig" \
-      -o /tmp/SHA256.sig || die "download of SHA256.sig failed"
-
-    # Verify BEFORE touching /usr/src or /usr/ports. Previously signify's exit
-    # status was ignored and the trees were deleted before any download
-    # succeeded, so a failed fetch left the host with no sources at all and
-    # unverified content was extracted as root.
-    cd /tmp || die "cannot cd /tmp"
-    signify -Cp "/etc/signify/openbsd-$(echo "${REL}" | cut -c 1,3)-base.pub" \
-      -x SHA256.sig ports.tar.gz src.tar.gz sys.tar.gz \
-      || die "source signature verification FAILED, /usr/src and /usr/ports untouched"
-    echo "PFUIDNS: Signatures verified"
-
-    echo "PFUIDNS: Cleaning OpenBSD Sources base (can take a while)"
-    rm -rf /usr/ports/*
-    rm -rf /usr/src/*
-
-    echo "PFUIDNS: Extracting Ports Sources: ports (can take a while)"
-    cd /usr || die "cannot cd /usr"
-    tar xzf /tmp/ports.tar.gz || die "extract of ports.tar.gz failed"
-    echo "PFUIDNS: Extracting System Sources: src (can take a while)"
-    cd /usr/src || die "cannot cd /usr/src"
-    tar xzf /tmp/src.tar.gz || die "extract of src.tar.gz failed"
-    echo "PFUIDNS: Extracting System Sources: sys (can take a while)"
-    tar xzf /tmp/sys.tar.gz || die "extract of sys.tar.gz failed"
-    echo "PFUIDNS: Removing downloaded sources"
-    rm -f /tmp/ports.tar.gz /tmp/src.tar.gz /tmp/sys.tar.gz /tmp/SHA256.sig
-    echo "PFUIDNS: System Sources update complete"
+  # Unbound is built with Makefile.bsd-wrapper taken from the system sources,
+  # so a usable /usr/src is a prerequisite for the build below
+  if [ -f /usr/src/usr.sbin/unbound/Makefile.bsd-wrapper ] \
+     || [ -f /usr/src/usr.sbin/unbound.base/Makefile.bsd-wrapper ]; then
+    HAVE_SRC="found"
   else
-    echo "PFUIDNS: Using your existing System Sources"
-    echo "PFUIDNS: If build errors occur, it is likely a source tree issue"
+    HAVE_SRC="NOT found"
   fi
+
+  REL=$(uname -r)
+  echo "OpenBSD system sources in /usr/src (Unbound's wrapper Makefile comes from there)"
+  echo "  1) keep the existing tree and carry on to the build  [${HAVE_SRC}]"
+  echo "  2) replace it with the signed ${REL} release sources"
+  echo "  3) replace it with -current from the git mirror (unsigned)"
+  echo "Options 2 and 3 delete /usr/src/* first. /usr/ports is never touched."
+  read -p "Choose 1, 2 or 3 [1]: " src_choice
+  case "${src_choice}" in
+    2) fetch_release_src "${REL}" ;;
+    3) fetch_current_src ;;
+    *)
+      echo "PFUIDNS: Keeping the existing /usr/src, continuing to the build"
+      [ "${HAVE_SRC}" = "found" ] \
+        || echo "PFUIDNS: WARNING no Makefile.bsd-wrapper under /usr/src; choose 2 or 3 if the build fails"
+      ;;
+  esac
 
 elif [[ "$OS" = "FreeBSD" ]]; then
   # The FreeBSD path never built Unbound (that block is OpenBSD-only) and then
