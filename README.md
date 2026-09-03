@@ -43,7 +43,7 @@ means a new `client-<resolver>/`; a second server implementation means a new
 **"PFUI_Unbound"** - A Python3 module for [Unbound](https://nlnetlabs.nl/projects/unbound/about/) DNS resolvers;
 Installed on Unbound DNS servers, forwards successful/permitted DNS responses (IPs & TTLs) to all "PFUI_Firewall" instances (Eg CARP Pair).
 
-**"PFUI_Firewall"** - A Python3 daemon service; Installed on OpenBSD PF firewalls, receives messages from 
+**"PFUI_Firewall"** - A daemon service, in Rust by default or Python; Installed on OpenBSD PF firewalls, receives messages from 
 "PFUI_Unbound" instances, and installs permitted IPs into PF Tables (using IOCTL) and 'persist' files for use in pf.conf rules.
 
 The "PFUI_Firewall" daemon also maintains a Redis database, to provide TTL tracking. Eg, expiries IP entries using the
@@ -446,17 +446,23 @@ Supports IPv4 and IPv6.
 
 PFUI_Unbound - Supports anything Unbound does (Linux, BSD, etc), requires Python 3.
 
-PFUI_Firewall - Supports OpenBSD (FreeBSD still in alpha), requires Python 3.
+PFUI_Firewall - Supports OpenBSD (FreeBSD still in alpha). Python is optional:
+the default Rust daemon needs none on the firewall, and the Python daemon
+requires Python 3.
 
 
 ------
 ### Known Issues;
 
-Unbound with PFUI_Firewall - Does **not** currently support running Unbound with 'chroot'. TODO Python dependencies must
-also reside in the jail. Virtualenv planned for PFUI release candidate.
+Unbound with PFUI_Firewall - Does **not** currently support running Unbound with
+'chroot'. The resolver's Python module imports its dependencies at load time, and
+those would have to exist inside the chroot. This applies to the resolver only;
+the firewall daemon is unaffected either way.
 
-pfui_firewall.py (/usr/local/sbin/pfui_firewall) - uses an excplicit '#!/usr/local/bin/python3' hash-bang rather than
-usual 'env python3' to occasional boot autostart sequeunce issues.
+The Python daemon (server-python/pfui_firewall.py) uses an explicit
+'#!/usr/local/bin/python3' shebang rather than the usual 'env python3', to avoid
+occasional boot autostart sequence issues. The Rust daemon is a compiled binary
+and is unaffected.
 
 Some browsers tend to cache DNS responses longer than the DNS RRs TTL value! This is bad practice and causes issues
 as websites change IPs for many reasons. `about:config`, set `network.dnsCacheExpiration = 0` to disable the Firefox internal DNS cache (use resolvers cache).
