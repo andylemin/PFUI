@@ -544,6 +544,10 @@ class PFUI_Firewall(Service):
         self.logger.addHandler(
             SysLogHandler(address=find_syslog(), facility=SysLogHandler.LOG_DAEMON)
         )
+        # Normalised before it is read anywhere: matching the raw text made
+        # 'debug' silently select ERROR, self.stats included
+        self.cfg["LOG_LEVEL"] = str(self.cfg["LOG_LEVEL"]).strip().upper()
+
         # Both the timing probes and the summary below use this one flag
         self.stats = (
             bool(self.cfg["LOGGING"]) and self.cfg["LOG_LEVEL"] == "DEBUG"
@@ -986,7 +990,8 @@ class PFUI_Firewall(Service):
             else:
                 msg = b"ACK"
 
-            self.logger.info(f"PFUIFW: Close msg: {msg}")
+            if self.cfg["LOGGING"]:
+                self.logger.info(f"PFUIFW: Close msg: {msg}")
 
             if proto == "UDP":
                 # Only reply to a datagram that validated. A refusal sent to an

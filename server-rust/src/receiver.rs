@@ -232,7 +232,12 @@ fn handle_stream(_kind: StreamKind, conn: &mut dyn Stream, peer: &str, ctx: &Ctx
     // which is routine on the unix transport, and the addresses are installed
     // before any acknowledgement is attempted
     let reply = |conn: &mut dyn Stream, msg: &str| {
-        ctx.log.info(&format!("Close msg: {msg}"));
+        // One line per message, so it is gated on LOGGING like the other
+        // per-message output. A refusal is already reported at error level with
+        // its reason, and a success by "PF Table updated" above.
+        if ctx.log.verbose {
+            ctx.log.info(&format!("Close msg: {msg}"));
+        }
         let _ = conn.write_all(msg.as_bytes());
         let _ = conn.flush();
     };

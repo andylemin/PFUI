@@ -183,3 +183,28 @@ def test_every_refusal_reason_is_documented():
         "Socket timeout",
     ):
         assert f"`{reason}`" in spec, f"{reason} is sent but not documented"
+
+
+def test_the_reply_is_not_logged_unless_logging_is_on(daemon):
+    """'Close msg' was the one per-message line not gated on LOGGING, so the
+    shipped config (LOGGING: False with LOG_LEVEL: DEBUG) wrote a syslog line per
+    DNS answer. The reason for a refusal is already logged at error level, and a
+    success by the PF table line, so this one is chatter."""
+    msg = {"kind": "rr", "qname": "a.", "AF4": [{"ip": "8.8.8.8", "ttl": 60}], "AF6": []}
+
+    daemon.cfg["LOGGING"] = False
+    assert deliver(daemon, encode(msg, compress=COMPRESS)) == b"ACKUPDATE"
+    assert not [l for l in daemon.logger.lines if "Close msg" in l], daemon.logger.lines
+
+    daemon.logger.lines.clear()
+    daemon.cfg["LOGGING"] = True
+    assert deliver(daemon, encode(msg, compress=COMPRESS)) == b"ACKUPDATE"
+    assert [l for l in daemon.logger.lines if "Close msg" in l], daemon.logger.lines
+
+
+def test_a_refusal_is_still_reported_when_logging_is_off(daemon):
+    """Gating the reply line must not hide the reason a message was rejected:
+    that is logged separately, at error level, whatever LOGGING says."""
+    daemon.cfg["LOGGING"] = False
+    assert deliver(daemon, HEADER.pack(0)) == b"Bad length"
+    assert daemon.logger.lines, "a refusal left no trace at all"
