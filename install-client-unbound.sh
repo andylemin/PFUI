@@ -152,32 +152,6 @@ if [[ "$OS" = "OpenBSD" ]]; then
   fi
 
   echo
-  # Unbound is built with Makefile.bsd-wrapper taken from the system sources,
-  # so a usable /usr/src is a prerequisite for the build below
-  if [ -f /usr/src/usr.sbin/unbound/Makefile.bsd-wrapper ] \
-     || [ -f /usr/src/usr.sbin/unbound.base/Makefile.bsd-wrapper ]; then
-    HAVE_SRC="found"
-  else
-    HAVE_SRC="NOT found"
-  fi
-
-  REL=$(uname -r)
-  echo "OpenBSD system sources in /usr/src (Unbound's wrapper Makefile comes from there)"
-  echo "  1) keep the existing tree and carry on to the build  [${HAVE_SRC}]"
-  echo "  2) replace it with the signed ${REL} release sources"
-  echo "  3) replace it with -current from the git mirror (unsigned)"
-  echo "Options 2 and 3 delete /usr/src/* first. /usr/ports is never touched."
-  read -p "Choose 1, 2 or 3 [1]: " src_choice
-  case "${src_choice}" in
-    2) fetch_release_src "${REL}" ;;
-    3) fetch_current_src ;;
-    *)
-      echo "PFUIDNS: Keeping the existing /usr/src, continuing to the build"
-      [ "${HAVE_SRC}" = "found" ] \
-        || echo "PFUIDNS: WARNING no Makefile.bsd-wrapper under /usr/src; choose 2 or 3 if the build fails"
-      ;;
-  esac
-
 elif [[ "$OS" = "FreeBSD" ]]; then
   # The FreeBSD path never built Unbound (that block is OpenBSD-only) and then
   # ran the OpenBSD-only tail regardless, so it could only ever half-install.
@@ -208,9 +182,55 @@ if [[ "$OS" = "OpenBSD" ]]; then
     mkdir -p "${TARGET}"
   fi
 
+  # Report what is installed, so the choice below is an informed one. A module
+  # upgrade is the common case and needs no rebuild.
+  if [ -x /usr/local/sbin/unbound ]; then
+    INSTALLED_VER=$(/usr/local/sbin/unbound -V 2>/dev/null | sed -n 's/^Version //p' | head -1)
+    if /usr/local/sbin/unbound -V 2>/dev/null | grep -q pythonmodule; then
+      HAVE_UNBOUND="${INSTALLED_VER:-unknown version}, with the Python module"
+      BUILD_DEFAULT=1
+    else
+      HAVE_UNBOUND="${INSTALLED_VER:-unknown version}, WITHOUT the Python module"
+      BUILD_DEFAULT=2
+    fi
+  else
+    HAVE_UNBOUND="none at /usr/local/sbin/unbound"
+    BUILD_DEFAULT=2
+  fi
+
   echo
-  read -p "Would you like to build Unbound with Python module support (required) y/n: " yn
-  if [[ "$yn" = "y" ]]; then
+  echo "Unbound resolver (installed: ${HAVE_UNBOUND})"
+  echo "  1) keep it, and update only the PFUI module and configuration"
+  echo "  2) build and install Unbound (${UNBOUND_VERSION}) with the Python module"
+  read -p "Choose 1 or 2 [${BUILD_DEFAULT}]: " build_choice
+  [ -n "${build_choice}" ] || build_choice="${BUILD_DEFAULT}"
+  if [[ "${build_choice}" = "2" ]]; then
+    # Unbound is built with Makefile.bsd-wrapper taken from the system sources,
+    # so a usable /usr/src is a prerequisite for the build below
+    if [ -f /usr/src/usr.sbin/unbound/Makefile.bsd-wrapper ] \
+       || [ -f /usr/src/usr.sbin/unbound.base/Makefile.bsd-wrapper ]; then
+      HAVE_SRC="found"
+    else
+      HAVE_SRC="NOT found"
+    fi
+
+    REL=$(uname -r)
+    echo "OpenBSD system sources in /usr/src (Unbound's wrapper Makefile comes from there)"
+    echo "  1) keep the existing tree and carry on to the build  [${HAVE_SRC}]"
+    echo "  2) replace it with the signed ${REL} release sources"
+    echo "  3) replace it with -current from the git mirror (unsigned)"
+    echo "Options 2 and 3 delete /usr/src/* first. /usr/ports is never touched."
+    read -p "Choose 1, 2 or 3 [1]: " src_choice
+    case "${src_choice}" in
+      2) fetch_release_src "${REL}" ;;
+      3) fetch_current_src ;;
+      *)
+        echo "PFUIDNS: Keeping the existing /usr/src, continuing to the build"
+        [ "${HAVE_SRC}" = "found" ] \
+          || echo "PFUIDNS: WARNING no Makefile.bsd-wrapper under /usr/src; choose 2 or 3 if the build fails"
+        ;;
+    esac
+
     RELEASE_HELPER="${DIR}/client-unbound/tools/unbound_release.sh"
     [ -x "${RELEASE_HELPER}" ] || die "${RELEASE_HELPER} is missing or not executable"
     echo "PFUIDNS: Resolving which Unbound to build (UNBOUND_VERSION=${UNBOUND_VERSION})"
@@ -264,6 +284,16 @@ if [[ "$OS" = "OpenBSD" ]]; then
     make -f Makefile.bsd-wrapper || die "Unbound ${UNBOUND_REF} failed to build"
     make install-all || die "Unbound ${UNBOUND_REF} failed to install"
     make clean
+  else
+    echo "PFUIDNS: Keeping the installed Unbound; updating the PFUI module only"
+    case "${HAVE_UNBOUND}" in
+      *"WITHOUT the Python module"*)
+        echo "PFUIDNS: WARNING that Unbound cannot load a Python module, so PFUI" \
+             "will not run in it. Re-run and choose 2." ;;
+      "none at"*)
+        echo "PFUIDNS: WARNING there is no Unbound to load the module." \
+             "Re-run and choose 2." ;;
+    esac
   fi
 
   echo "PFUIDNS: Installing PFUI_Unbound and Configuration (Python Module for Unbound)"

@@ -730,3 +730,156 @@ def test_unknown_event_sets_module_error_even_if_logging_fails(plugin):
     qstate = QState()
     assert plugin.operate(0, 999, qstate, None) is True
     assert qstate.ext_state[0] == plugin.MODULE_ERROR
+
+
+# Faults found reviewing the callback and transmit paths. Each of these failed
+# before its fix, and each is reachable from a config an operator can write.
+
+
+def test_a_commented_out_firewall_list_loads_as_a_list(plugin, tmp_path):
+    """FIREWALLS: with every entry commented out parses as None, which
+    setdefault cannot replace, and transmit_all then iterates None."""
+    cfg = tmp_path / "pfui_unbound.yml"
+    cfg.write_text("LOGGING: False\nFIREWALLS:\n#  - HOST: 10.0.0.1\n")
+    assert plugin.load_config(cfg)["FIREWALLS"] == []
+
+
+def test_transmit_all_survives_an_empty_firewall_list(plugin, tmp_path):
+    cfg = tmp_path / "pfui_unbound.yml"
+    cfg.write_text("LOGGING: False\nFIREWALLS:\n")
+    plugin.pfui_cfg = plugin.load_config(cfg)
+    plugin.transmit_all(
+        {"kind": "rr", "qname": "x.", "AF4": [{"ip": "8.8.8.8", "ttl": 60}], "AF6": []},
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["SOCKET_TIMEOUT: '3'", "UDP_RETRY: '3'", "BREAKER_FAILURES: '3'",
+     "UDP_ACK_TIMEOUT: '0.5'"],
+)
+def test_quoted_numbers_are_coerced_at_load(plugin, tmp_path, line):
+    """A quoted number reached the socket calls as a string and raised there."""
+    cfg = tmp_path / "pfui_unbound.yml"
+    cfg.write_text(f"FIREWALLS:\n  - HOST: 10.0.0.1\n{line}\n")
+    key = line.split(":")[0]
+    assert isinstance(plugin.load_config(cfg)[key], (int, float))
+
+
+@pytest.mark.parametrize("value", ["1O001", "", "abc"])
+def test_an_unusable_port_is_refused_at_load(plugin, tmp_path, value):
+    """int(PORT) runs on the send path, where the failure looks like a resolver
+    fault rather than the configuration error it is."""
+    cfg = tmp_path / "pfui_unbound.yml"
+    cfg.write_text(f"FIREWALLS:\n  - HOST: 10.0.0.1\n    PORT: '{value}'\n")
+    with pytest.raises(ValueError, match="PORT"):
+        plugin.load_config(cfg)
+
+
+def test_an_emptied_numeric_key_is_refused_at_load(plugin, tmp_path):
+    cfg = tmp_path / "pfui_unbound.yml"
+    cfg.write_text("FIREWALLS:\n  - HOST: 10.0.0.1\nBREAKER_FAILURES:\n")
+    with pytest.raises(ValueError, match="BREAKER_FAILURES"):
+        plugin.load_config(cfg)
+
+
+def test_a_non_blocking_send_records_no_success(plugin):
+    """A firewall that accepts and never answers is a failure the blocking path
+    counts. A cache report to the same firewall succeeds at the socket, and
+    recording that a success cleared the count, so the breaker never opened
+    however long the firewall stayed silent."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    host, port = listener.getsockname()
+    plugin.pfui_cfg = dict(plugin.CONFIG_DEFAULTS, SOCKET_TIMEOUT=0.2,
+                           BREAKER_FAILURES=3, BREAKER_COOLOFF=30)
+    plugin._breakers.clear()
+    recorded = []
+    original = plugin.breaker_record
+
+    def spy(target, ok):
+        recorded.append(ok)
+        original(target, ok)
+
+    plugin.breaker_record = spy
+    try:
+        # Accepted but never answered, exactly what a saturated firewall does
+        plugin.tcp_transmit_close(b"x", host, port, blocking=False)
+        assert True not in recorded, f"a non-blocking send recorded {recorded}"
+
+        for _ in range(3):
+            plugin.tcp_transmit_close(b"x", host, port, blocking=True)
+        assert plugin.breaker_open(f"{host}:{port}")
+    finally:
+        plugin.breaker_record = original
+        listener.close()
+
+
+def test_the_cache_callback_reports_a_result_and_never_raises(plugin, monkeypatch):
+    """Its return value is read as a boolean, and a raise discards the cache hit."""
+    monkeypatch.setattr(plugin, "read_rr",
+                        lambda *a, **k: {"kind": "cache", "qname": "x.",
+                                         "AF4": [], "AF6": []})
+    monkeypatch.setattr(plugin, "transmit_all",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    qinfo = type("Q", (), {"qname_str": "x."})()
+    assert plugin.inplace_cache_callback(
+        qinfo, None, object(), 0, None, None, None
+    ) is True
+
+
+def test_a_fault_at_moddone_finishes_the_query(plugin, monkeypatch):
+    """MODULE_WAIT_MODULE tells the mesh to advance to the next module, which
+    re-enters one that has already run and loops the query."""
+    monkeypatch.setattr(plugin, "read_rr",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    qstate = type("S", (), {
+        "return_msg": type("R", (), {"rep": object(), "qinfo": object()})(),
+        "qinfo": type("Q", (), {"qname_str": "x."})(),
+        "ext_state": {},
+    })()
+    assert plugin.operate(0, plugin.MODULE_EVENT_MODDONE, qstate, None) is True
+    assert qstate.ext_state[0] == plugin.MODULE_FINISHED
+
+
+def test_logger_tolerates_a_reply_without_records(plugin):
+    """The 'if r:' guard sat five lines after the dereference it guarded."""
+    qstate = type("S", (), {
+        "return_msg": type("R", (), {"rep": None, "qinfo": object()})(),
+        "qinfo": type("Q", (), {"qname_str": "x.", "qtype_str": "A", "qtype": 1,
+                                "qclass_str": "IN", "qclass": 1})(),
+    })()
+    plugin.logger(qstate)
+
+
+def test_an_acknowledgement_split_in_transit_is_still_read(plugin):
+    """One recv() took whatever the first segment held, so a reply delivered in
+    two pieces compared unequal to ACKUPDATE and was charged as a refusal."""
+    import threading
+    import time as _time
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    host, port = listener.getsockname()
+
+    def serve():
+        conn, _ = listener.accept()
+        conn.recv(1024)
+        conn.send(b"ACK")          # deliberately split
+        _time.sleep(0.05)
+        conn.send(b"UPDATE")
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    plugin.pfui_cfg = dict(plugin.CONFIG_DEFAULTS, SOCKET_TIMEOUT=2,
+                           BREAKER_FAILURES=3, BREAKER_COOLOFF=30)
+    plugin._breakers.clear()
+    try:
+        plugin.tcp_transmit_close(b"x", host, port, blocking=True)
+        # A confirmed update leaves no failure counted against the firewall
+        assert plugin._breakers[f"{host}:{port}"][0] == 0
+    finally:
+        listener.close()
