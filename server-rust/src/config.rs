@@ -222,8 +222,14 @@ pub fn load_config_str(text: &str) -> Result<Config, ConfigError> {
         return Err(ConfigError::NoListener);
     }
 
-    // Any LOG_LEVEL other than DEBUG or INFO is ERROR
-    let log_level = match doc.text("LOG_LEVEL", "DEBUG").as_str() {
+    // Any LOG_LEVEL other than DEBUG or INFO is ERROR. Trimmed and folded to
+    // upper case first: matching the raw text made 'debug' silently mean ERROR.
+    let log_level = match doc
+        .text("LOG_LEVEL", "DEBUG")
+        .trim()
+        .to_uppercase()
+        .as_str()
+    {
         "DEBUG" => LogLevel::Debug,
         "INFO" => LogLevel::Info,
         _ => LogLevel::Error,
@@ -282,6 +288,26 @@ AF6_FILE: /var/db/pfui/ipv6_domains
 
     fn with(extra: &str) -> Result<Config, ConfigError> {
         load_config_str(&format!("{BASE}{extra}"))
+    }
+
+    #[test]
+    fn log_level_is_read_case_insensitively() {
+        // Matching the raw text made a lower-case level mean ERROR, so a
+        // resolver set to debug logged nothing but faults
+        let level = |text: &str| {
+            let yaml = format!("SOCKET_LISTEN: 10.10.1.254\nLOG_LEVEL: '{text}'\n");
+            with(&yaml).unwrap().log_level
+        };
+        for text in ["DEBUG", "debug", " Debug ", "dEbUg"] {
+            assert_eq!(level(text), LogLevel::Debug, "LOG_LEVEL: {text:?}");
+        }
+        for text in ["INFO", "info", " info "] {
+            assert_eq!(level(text), LogLevel::Info, "LOG_LEVEL: {text:?}");
+        }
+        // Anything unrecognised stays ERROR rather than opening the logs up
+        for text in ["ERROR", "error", "warn", "verbose", ""] {
+            assert_eq!(level(text), LogLevel::Error, "LOG_LEVEL: {text:?}");
+        }
     }
 
     #[test]
