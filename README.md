@@ -1,6 +1,5 @@
 # PFUI "Default-Deny DNS-Firewall"
 **PFUI (Phooey [ foo-ee ]) - `Packet Filter Unsolicited IPs` (using OpenBSD PF, Unbound and the Internet).**\
-Dictionary; "an exclamation indicating disagreement or rejection".
 
 <div style="text-align: center;">
 <img src="logos/PFUI_Full_Logo.png" alt="PFUI" width="200px;"/>
