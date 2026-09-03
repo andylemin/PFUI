@@ -44,11 +44,16 @@ fn own_group() -> String {
 }
 
 /// A socket path short enough for sun_path wherever the tmpdir lands.
+///
+/// The mode is set rather than inherited: bind_unix narrows the process umask,
+/// which is global, so a directory created while another test is inside that
+/// window loses its execute bit and nothing can be bound inside it.
 fn short_dir() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix("pfui")
         .tempdir_in("/tmp")
         .unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let sock = dir.path().join("s.sock");
     (dir, sock)
 }
