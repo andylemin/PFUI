@@ -288,3 +288,104 @@ fn a_stalled_peer_hits_the_timeout() {
     conn.read_to_string(&mut reply).unwrap();
     assert_eq!(reply, "Socket timeout");
 }
+
+/// Backends whose db_push blocks until released, standing in for a slow Redis.
+struct SlowDb {
+    release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    entered: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Backends for SlowDb {
+    fn table_push(&self, _table: &str, _ips: &[IpAddr]) {}
+
+    fn db_push(&self, _table: &str, _data: &[(String, i64)], _kind: Kind, _qname: &str) {
+        let (lock, cv) = &*self.entered;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+
+        let (lock, cv) = &*self.release;
+        let mut go = lock.lock().unwrap();
+        while !*go {
+            // Bounded so a regression fails rather than hanging the suite
+            let (guard, timed_out) = cv.wait_timeout(go, Duration::from_secs(20)).unwrap();
+            go = guard;
+            if timed_out.timed_out() {
+                break;
+            }
+        }
+    }
+
+    fn file_push(&self, _file: &Path, _ips: &[String]) {}
+}
+
+fn wait_for(flag: &Arc<(Mutex<bool>, std::sync::Condvar)>, within: Duration) -> bool {
+    let (lock, cv) = &**flag;
+    let mut set = lock.lock().unwrap();
+    while !*set {
+        let (guard, timed_out) = cv.wait_timeout(set, within).unwrap();
+        set = guard;
+        if timed_out.timed_out() {
+            break;
+        }
+    }
+    *set
+}
+
+#[test]
+fn the_resolver_is_released_before_redis_and_the_persist_file() {
+    // A reply is not length-prefixed, so a client reads it until the connection
+    // closes. The daemon used to close only after the stores had run, so the
+    // resolver waited for Redis and the persist write despite the ACK being sent
+    // ahead of both.
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let entered = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let backends = Arc::new(SlowDb {
+        release: Arc::clone(&release),
+        entered: Arc::clone(&entered),
+    });
+
+    let cfg = Arc::new(test_config());
+    let log = Arc::new(Logger::stderr(cfg.log_level, cfg.logging));
+    let ctx = Arc::new(Ctx {
+        cfg: Arc::clone(&cfg),
+        log: Arc::clone(&log),
+        backends: backends as Arc<dyn Backends>,
+        udp: None,
+    });
+    let pool = WorkerPool::start(ctx);
+    let listener = listener::bind_tcp("127.0.0.1", 0, cfg.socket_backlog).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let term = Arc::new(AtomicBool::new(false));
+    let submit = pool.submitter();
+    let (term_c, cfg_c, log_c) = (Arc::clone(&term), Arc::clone(&cfg), Arc::clone(&log));
+    let accept = std::thread::spawn(move || {
+        listener::serve_stream(StreamListener::Tcp(listener), submit, term_c, cfg_c, log_c)
+    });
+
+    let mut conn = TcpStream::connect(addr).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    conn.write_all(&valid_message()).unwrap();
+
+    // Read to EOF exactly as the resolver does
+    let mut reply = String::new();
+    let read = conn.read_to_string(&mut reply);
+
+    assert!(
+        wait_for(&entered, Duration::from_secs(5)),
+        "db_push was never reached, so this proves nothing"
+    );
+    assert!(
+        read.is_ok(),
+        "the resolver was still waiting on Redis: {:?}",
+        read.err()
+    );
+    assert_eq!(reply, "ACKUPDATE");
+
+    // Let the store finish and shut down cleanly
+    let (lock, cv) = &*release;
+    *lock.lock().unwrap() = true;
+    cv.notify_all();
+    term.store(true, Ordering::Relaxed);
+    let _ = accept.join();
+    pool.shutdown();
+}

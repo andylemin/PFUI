@@ -69,8 +69,29 @@ pub trait Backends: Send + Sync {
     fn file_push(&self, file: &Path, ips: &[String]);
 }
 
-pub trait Stream: Read + Write + Send {}
-impl<T: Read + Write + Send> Stream for T {}
+pub trait Stream: Read + Write + Send {
+    /// Send FIN on the write half, leaving the read half open.
+    ///
+    /// An acknowledgement is not length-prefixed, so a client cannot know it has
+    /// the whole reply until the connection closes. Half-closing as soon as the
+    /// ACK is flushed is what releases the resolver at the table update rather
+    /// than at the end of the message, which is the point of the PF, ACKUPDATE,
+    /// Redis, persist order. Failure is ignored: a client that has already gone
+    /// is routine, and the addresses are installed either way.
+    fn shutdown_write(&mut self);
+}
+
+impl Stream for std::net::TcpStream {
+    fn shutdown_write(&mut self) {
+        let _ = self.shutdown(std::net::Shutdown::Write);
+    }
+}
+
+impl Stream for std::os::unix::net::UnixStream {
+    fn shutdown_write(&mut self) {
+        let _ = self.shutdown(std::net::Shutdown::Write);
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StreamKind {
@@ -292,6 +313,17 @@ fn handle_stream(_kind: StreamKind, conn: &mut dyn Stream, peer: &str, ctx: &Ctx
         } => {
             act(ctx, kind, &qname, &af4, &af6, || {
                 reply(conn, ACK_UPDATE);
+                // Released here, before Redis and the persist file: PF already
+                // passes the traffic, so the resolver has nothing left to wait
+                // for. Holding the socket open until this function returned made
+                // it wait for both, since it reads the reply until EOF.
+                conn.shutdown_write();
+                if let Some(t0) = started {
+                    ctx.log.info(&format!(
+                        "latency microsecs to ack={:.2}",
+                        t0.elapsed().as_secs_f64() * 1e6
+                    ));
+                }
             });
             if let Some(t0) = started {
                 ctx.log.info(&format!(
