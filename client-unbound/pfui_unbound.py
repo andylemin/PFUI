@@ -31,7 +31,7 @@ CONFIG_LOCATION = "/var/unbound/etc/pfui_unbound.yml"
 # installer puts the shared pfui/ package beside this config, so derive it from
 # there: one hardcoded location, same as CONFIG_LOCATION itself.
 sys.path.insert(0, dirname(CONFIG_LOCATION))
-from pfui_wire import encode_payload, frame  # noqa: E402
+from pfui_wire import HAVE_LZ4, encode_payload, frame  # noqa: E402
 
 from socket import (
     AF_INET,
@@ -848,6 +848,15 @@ def load_config(location=CONFIG_LOCATION):
             f"{'/'.join(LOG_LEVELS)}; treating it as ERROR"
         )
         cfg["LOG_LEVEL"] = "ERROR"
+
+    # Checked here rather than left to the first query: encode_payload would
+    # raise per answer, and a resolver that answers while telling no firewall
+    # anything leaves every client denied by PF with nothing in the log to say so
+    if cfg["COMPRESS"] and not HAVE_LZ4:
+        raise ValueError(
+            "COMPRESS is True but the lz4 package is not installed; install "
+            "py3-lz4, or set COMPRESS: False here and on the firewall"
+        )
 
     cfg["SOCKET_PROTO"] = str(cfg["SOCKET_PROTO"]).strip().upper()
     if cfg["SOCKET_PROTO"] not in ("TCP", "UDP"):

@@ -99,25 +99,6 @@ fn run() -> i32 {
         Arc::new(AtomicBool::new(false)),
     );
 
-    // Background expiry, one thread per address family
-    let mut sync_threads = Vec::new();
-    for (table, file) in pfui_firewall::backends::persist_files(&cfg) {
-        match pfui_firewall::sync::spawn(
-            Arc::clone(&backends) as Arc<dyn pfui_firewall::sync::SyncOps>,
-            table,
-            file,
-            cfg.scan_period,
-            Arc::clone(&term),
-            Arc::clone(&log),
-        ) {
-            Ok(handle) => sync_threads.push(handle),
-            Err(e) => {
-                log.error(&format!("Scanning thread failed: {e}"));
-                return 4;
-            }
-        }
-    }
-
     if config::udp_gate_refuses(&cfg) {
         log.error(
             "UDP mode is spoofable (a datagram source address is not verified) \
@@ -203,6 +184,37 @@ fn run() -> i32 {
             listener::remove_unix_socket(path);
         }
         return 6;
+    }
+
+    // Background expiry, one thread per address family. Started only once the
+    // daemon has committed to serving: spawned before the UDP gate and the
+    // binds, these threads were already rewriting PF tables, Redis and the
+    // persist files while run() was returning a refusal, and nothing joined
+    // them on the way out. Starting them after bind_unix also keeps them clear
+    // of the umask it narrows, which is process-global.
+    let mut sync_threads = Vec::new();
+    for (table, file) in pfui_firewall::backends::persist_files(&cfg) {
+        match pfui_firewall::sync::spawn(
+            Arc::clone(&backends) as Arc<dyn pfui_firewall::sync::SyncOps>,
+            table,
+            file,
+            cfg.scan_period,
+            Arc::clone(&term),
+            Arc::clone(&log),
+        ) {
+            Ok(handle) => sync_threads.push(handle),
+            Err(e) => {
+                log.error(&format!("Scanning thread failed: {e}"));
+                term.store(true, std::sync::atomic::Ordering::Relaxed);
+                for handle in sync_threads {
+                    let _ = handle.join();
+                }
+                if let Some(path) = &cfg.socket_unix {
+                    listener::remove_unix_socket(path);
+                }
+                return 4;
+            }
+        }
     }
 
     let ctx = Arc::new(Ctx {

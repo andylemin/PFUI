@@ -49,7 +49,15 @@ from socket import socket
 from pfui.pf_ioctl import table_pop, table_push
 from pfui.store import expired_keys
 from pfui.validate import extract
-from pfui_wire import BadLength, MAX_MESSAGE, Truncated, WireError, decode, read_frame
+from pfui_wire import (
+    HAVE_LZ4,
+    BadLength,
+    MAX_MESSAGE,
+    Truncated,
+    WireError,
+    decode,
+    read_frame,
+)
 
 CONFIG_LOCATION = "/etc/pfui_firewall.yml"
 
@@ -118,6 +126,14 @@ def load_config(location: str = CONFIG_LOCATION) -> dict:
         raise ValueError(
             "not found in the YAML Config File, please configure: "
             + ", ".join(missing)
+        )
+
+    # Checked at load rather than per message: without the codec every message
+    # would be refused as undecodable, which reads as a client fault
+    if cfg["COMPRESS"] and not HAVE_LZ4:
+        raise ValueError(
+            "COMPRESS is True but the lz4 package is not installed; install "
+            "py3-lz4, or set COMPRESS: False here and on every resolver"
         )
 
     # Normalised and validated here because run() selects its network listener by

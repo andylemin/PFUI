@@ -21,10 +21,8 @@ fn log() -> Logger {
     Logger::stderr(LogLevel::Error, false)
 }
 
-/// The caller's own primary group: a grant target that exists and that an
-/// unprivileged test may chown to.
-fn own_group() -> String {
-    let gid = unsafe { libc::getgid() };
+/// Resolve one gid to its name, if it has one.
+fn group_name(gid: libc::gid_t) -> Option<String> {
     let mut grp: libc::group = unsafe { std::mem::zeroed() };
     let mut buf = vec![0u8; 4096];
     let mut result: *mut libc::group = std::ptr::null_mut();
@@ -37,10 +35,37 @@ fn own_group() -> String {
             &mut result,
         )
     };
-    assert!(rc == 0 && !result.is_null(), "cannot resolve own group");
-    unsafe { std::ffi::CStr::from_ptr(grp.gr_name) }
-        .to_string_lossy()
-        .into_owned()
+    if rc != 0 || result.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { std::ffi::CStr::from_ptr(grp.gr_name) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// A group the caller belongs to, by name: a grant target that exists and that
+/// an unprivileged test may chown to.
+///
+/// Any membership will do, so the primary is only the first candidate. On a
+/// directory-joined host the primary gid often has no local group entry, and
+/// insisting on it made every test here fail for want of a name.
+fn own_group() -> String {
+    if let Some(name) = group_name(unsafe { libc::getgid() }) {
+        return name;
+    }
+    let mut gids = vec![0 as libc::gid_t; 64];
+    let count = unsafe { libc::getgroups(gids.len() as libc::c_int, gids.as_mut_ptr()) };
+    if count > 0 {
+        gids.truncate(count as usize);
+        for gid in gids {
+            if let Some(name) = group_name(gid) {
+                return name;
+            }
+        }
+    }
+    panic!("no group this process belongs to has a name; cannot test a group grant");
 }
 
 /// A socket path short enough for sun_path wherever the tmpdir lands.

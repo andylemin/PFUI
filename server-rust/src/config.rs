@@ -64,8 +64,17 @@ pub enum ConfigError {
     MissingRequired(&'static str),
     BadProto(String),
     RelativeSocketPath(String),
-    SocketPathTooLong { path: String, len: usize },
+    SocketPathTooLong {
+        path: String,
+        len: usize,
+    },
     NoListener,
+    OutOfRange {
+        key: &'static str,
+        value: i64,
+        min: i64,
+        max: i64,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -97,6 +106,14 @@ impl fmt::Display for ConfigError {
                  interface IP, never 0.0.0.0) for remote resolvers, or \
                  SOCKET_UNIX for a resolver on this host, or both"
             ),
+            ConfigError::OutOfRange {
+                key,
+                value,
+                min,
+                max,
+            } => {
+                write!(f, "{key} must be between {min} and {max}, not {value}")
+            }
         }
     }
 }
@@ -155,6 +172,27 @@ impl Doc {
             .get(Value::from(key))
             .and_then(as_int)
             .unwrap_or(default)
+    }
+    /// An integer that has to fit where it is going. Casting instead truncated
+    /// silently: SOCKET_PORT: 65536 bound port 0, and REDIS_DB: 256 selected
+    /// database 0, both without a word in the log.
+    fn ranged(
+        &self,
+        key: &'static str,
+        default: i64,
+        min: i64,
+        max: i64,
+    ) -> Result<i64, ConfigError> {
+        let value = self.int(key, default);
+        if !(min..=max).contains(&value) {
+            return Err(ConfigError::OutOfRange {
+                key,
+                value,
+                min,
+                max,
+            });
+        }
+        Ok(value)
     }
     fn float(&self, key: &str, default: f64) -> f64 {
         self.0
@@ -247,18 +285,18 @@ pub fn load_config_str(text: &str) -> Result<Config, ConfigError> {
         socket_proto,
         socket_unix,
         socket_unix_group: doc.text("SOCKET_UNIX_GROUP", "_pfui"),
-        socket_port: doc.int("SOCKET_PORT", 10001) as u16,
+        socket_port: doc.ranged("SOCKET_PORT", 10001, 1, 65535)? as u16,
         socket_timeout: doc.float("SOCKET_TIMEOUT", 3.0),
         socket_buffer: doc.int("SOCKET_BUFFER", 1024).max(1) as usize,
-        socket_backlog: doc.int("SOCKET_BACKLOG", 128) as i32,
+        socket_backlog: doc.ranged("SOCKET_BACKLOG", 128, 1, i32::MAX as i64)? as i32,
         compress: doc.boolean("COMPRESS", true),
-        max_workers: doc.int("MAX_WORKERS", 32).max(1) as usize,
+        max_workers: doc.ranged("MAX_WORKERS", 32, 1, 4096)? as usize,
         allow_insecure_udp: doc.boolean("ALLOW_INSECURE_UDP", false),
         redis_host: doc.text("REDIS_HOST", "127.0.0.1"),
-        redis_port: doc.int("REDIS_PORT", 6379) as u16,
-        redis_db: doc.int("REDIS_DB", 0) as u8,
+        redis_port: doc.ranged("REDIS_PORT", 6379, 1, 65535)? as u16,
+        redis_db: doc.ranged("REDIS_DB", 0, 0, u8::MAX as i64)? as u8,
         scan_period: doc.int("SCAN_PERIOD", 60).max(0) as u64,
-        ttl_multiplier: doc.int("TTL_MULTIPLIER", 2).max(0) as u32,
+        ttl_multiplier: doc.ranged("TTL_MULTIPLIER", 2, 0, u32::MAX as i64)? as u32,
         ctl,
         devpf: PathBuf::from(doc.text("DEVPF", "/dev/pf")),
         af4_table: doc.required("AF4_TABLE")?,
@@ -288,6 +326,37 @@ AF6_FILE: /var/db/pfui/ipv6_domains
 
     fn with(extra: &str) -> Result<Config, ConfigError> {
         load_config_str(&format!("{BASE}{extra}"))
+    }
+
+    #[test]
+    fn an_integer_that_does_not_fit_is_refused_not_truncated() {
+        // Casting silently: 65536 bound port 0, and REDIS_DB: 256 selected
+        // database 0, so the daemon served the wrong port or wrote the wrong
+        // Redis database with nothing in the log
+        let listener = "SOCKET_LISTEN: 10.10.1.254\n";
+        for (key, value) in [
+            ("SOCKET_PORT", "65536"),
+            ("SOCKET_PORT", "0"),
+            ("REDIS_PORT", "70000"),
+            ("REDIS_DB", "256"),
+            ("REDIS_DB", "-1"),
+            ("TTL_MULTIPLIER", "4294967296"),
+            ("MAX_WORKERS", "0"),
+        ] {
+            let yaml = format!("{listener}{key}: '{value}'\n");
+            match with(&yaml) {
+                Err(ConfigError::OutOfRange { key: k, .. }) => assert_eq!(k, key),
+                other => panic!("{key}: {value} was accepted as {other:?}"),
+            }
+        }
+
+        // The edges themselves stay valid
+        let cfg = with(&format!(
+            "{listener}SOCKET_PORT: '65535'\nREDIS_DB: '255'\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.socket_port, 65535);
+        assert_eq!(cfg.redis_db, 255);
     }
 
     #[test]

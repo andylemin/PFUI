@@ -349,7 +349,21 @@ impl WorkerPool {
                         guard.recv()
                     };
                     match job {
-                        Ok(job) => receiver::handle(job, &ctx),
+                        // Contained per job: a panic here used to unwind the
+                        // whole worker, so a repeatable fault retired the pool
+                        // one thread at a time until every message was shed and
+                        // nothing was whitelisted at all. The lock is released
+                        // above, so the channel cannot be poisoned by this.
+                        Ok(job) => {
+                            let run = std::panic::AssertUnwindSafe(|| receiver::handle(job, &ctx));
+                            if let Err(panic) = std::panic::catch_unwind(run) {
+                                ctx.log.error(&format!(
+                                    "worker panicked handling a message, \
+                                     continuing: {}",
+                                    panic_text(&panic)
+                                ));
+                            }
+                        }
                         Err(_) => return, // sender dropped: shutdown
                     }
                 })
@@ -378,10 +392,36 @@ impl WorkerPool {
     }
 }
 
+/// What a panic payload says, when it says anything.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "no message".to_string()
+    }
+}
+
+/// The outcome of offering one job to the pool.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Submitted {
+    Accepted,
+    /// Queue and workers all busy.
+    Shed,
+    /// The pool is gone, so nothing will run this job or any later one.
+    PoolStopped,
+}
+
 impl Submitter {
-    /// False = shed (queue and workers all busy).
-    pub fn try_submit(&self, job: Job) -> bool {
-        !matches!(self.tx.try_send(job), Err(TrySendError::Full(_)))
+    pub fn try_submit(&self, job: Job) -> Submitted {
+        match self.tx.try_send(job) {
+            Ok(()) => Submitted::Accepted,
+            Err(TrySendError::Full(_)) => Submitted::Shed,
+            // Reported as success before, so a job dropped after shutdown looked
+            // handled and the loop kept accepting work nothing would ever run
+            Err(TrySendError::Disconnected(_)) => Submitted::PoolStopped,
+        }
     }
 }
 
@@ -463,12 +503,20 @@ pub fn serve_stream(
                     conn,
                     peer: peer.clone(),
                 };
-                if !submit.try_submit(job) {
+                match submit.try_submit(job) {
+                    Submitted::Accepted => {}
                     // Shed rather than queue; dropping the job closes the fd
-                    log.error(&format!(
+                    Submitted::Shed => log.error(&format!(
                         "At capacity ({}), shedding {peer}",
                         submit.max_inflight
-                    ));
+                    )),
+                    Submitted::PoolStopped => {
+                        log.error(&format!(
+                            "Worker pool has stopped, dropping {peer} and \
+                             closing this listener"
+                        ));
+                        return;
+                    }
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
@@ -521,11 +569,19 @@ pub fn serve_udp(
             data: buf[..len].to_vec(),
             source,
         };
-        if !submit.try_submit(job) {
-            log.error(&format!(
+        match submit.try_submit(job) {
+            Submitted::Accepted => {}
+            Submitted::Shed => log.error(&format!(
                 "At capacity ({}), dropping {source}",
                 submit.max_inflight
-            ));
+            )),
+            Submitted::PoolStopped => {
+                log.error(&format!(
+                    "Worker pool has stopped, dropping {source} and closing \
+                     this listener"
+                ));
+                return;
+            }
         }
     }
 }

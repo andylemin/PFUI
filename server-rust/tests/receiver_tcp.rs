@@ -288,3 +288,183 @@ fn a_stalled_peer_hits_the_timeout() {
     conn.read_to_string(&mut reply).unwrap();
     assert_eq!(reply, "Socket timeout");
 }
+
+/// Backends whose db_push blocks until released, standing in for a slow Redis.
+struct SlowDb {
+    release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    entered: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Backends for SlowDb {
+    fn table_push(&self, _table: &str, _ips: &[IpAddr]) {}
+
+    fn db_push(&self, _table: &str, _data: &[(String, i64)], _kind: Kind, _qname: &str) {
+        let (lock, cv) = &*self.entered;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+
+        let (lock, cv) = &*self.release;
+        let mut go = lock.lock().unwrap();
+        while !*go {
+            // Bounded so a regression fails rather than hanging the suite
+            let (guard, timed_out) = cv.wait_timeout(go, Duration::from_secs(20)).unwrap();
+            go = guard;
+            if timed_out.timed_out() {
+                break;
+            }
+        }
+    }
+
+    fn file_push(&self, _file: &Path, _ips: &[String]) {}
+}
+
+fn wait_for(flag: &Arc<(Mutex<bool>, std::sync::Condvar)>, within: Duration) -> bool {
+    let (lock, cv) = &**flag;
+    let mut set = lock.lock().unwrap();
+    while !*set {
+        let (guard, timed_out) = cv.wait_timeout(set, within).unwrap();
+        set = guard;
+        if timed_out.timed_out() {
+            break;
+        }
+    }
+    *set
+}
+
+#[test]
+fn the_resolver_is_released_before_redis_and_the_persist_file() {
+    // A reply is not length-prefixed, so a client reads it until the connection
+    // closes. The daemon used to close only after the stores had run, so the
+    // resolver waited for Redis and the persist write despite the ACK being sent
+    // ahead of both.
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let entered = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let backends = Arc::new(SlowDb {
+        release: Arc::clone(&release),
+        entered: Arc::clone(&entered),
+    });
+
+    let cfg = Arc::new(test_config());
+    let log = Arc::new(Logger::stderr(cfg.log_level, cfg.logging));
+    let ctx = Arc::new(Ctx {
+        cfg: Arc::clone(&cfg),
+        log: Arc::clone(&log),
+        backends: backends as Arc<dyn Backends>,
+        udp: None,
+    });
+    let pool = WorkerPool::start(ctx);
+    let listener = listener::bind_tcp("127.0.0.1", 0, cfg.socket_backlog).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let term = Arc::new(AtomicBool::new(false));
+    let submit = pool.submitter();
+    let (term_c, cfg_c, log_c) = (Arc::clone(&term), Arc::clone(&cfg), Arc::clone(&log));
+    let accept = std::thread::spawn(move || {
+        listener::serve_stream(StreamListener::Tcp(listener), submit, term_c, cfg_c, log_c)
+    });
+
+    let mut conn = TcpStream::connect(addr).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    conn.write_all(&valid_message()).unwrap();
+
+    // Read to EOF exactly as the resolver does
+    let mut reply = String::new();
+    let read = conn.read_to_string(&mut reply);
+
+    assert!(
+        wait_for(&entered, Duration::from_secs(5)),
+        "db_push was never reached, so this proves nothing"
+    );
+    assert!(
+        read.is_ok(),
+        "the resolver was still waiting on Redis: {:?}",
+        read.err()
+    );
+    assert_eq!(reply, "ACKUPDATE");
+
+    // Let the store finish and shut down cleanly
+    let (lock, cv) = &*release;
+    *lock.lock().unwrap() = true;
+    cv.notify_all();
+    term.store(true, Ordering::Relaxed);
+    let _ = accept.join();
+    pool.shutdown();
+}
+
+/// Panics on its first table_push, then behaves.
+struct PanicsOnce {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Backends for PanicsOnce {
+    fn table_push(&self, _table: &str, _ips: &[IpAddr]) {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("a deliberate fault in a PF write");
+        }
+    }
+    fn db_push(&self, _t: &str, _d: &[(String, i64)], _k: Kind, _q: &str) {}
+    fn file_push(&self, _f: &Path, _i: &[String]) {}
+}
+
+#[test]
+fn a_panicking_job_does_not_retire_the_worker() {
+    // Unwinding took the whole worker with it, so a repeatable fault retired the
+    // pool one thread at a time until every message was shed and nothing was
+    // whitelisted. One worker here, so a lost thread means a lost daemon.
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cfg = Arc::new(
+        load_config_str(
+            "
+AF4_TABLE: t4
+AF4_FILE: /tmp/pfui-test-af4
+AF6_TABLE: t6
+AF6_FILE: /tmp/pfui-test-af6
+SOCKET_LISTEN: 127.0.0.1
+COMPRESS: False
+SOCKET_TIMEOUT: 1
+LOG_LEVEL: ERROR
+LOGGING: False
+MAX_WORKERS: 1
+",
+        )
+        .unwrap(),
+    );
+    let log = Arc::new(Logger::stderr(cfg.log_level, cfg.logging));
+    let ctx = Arc::new(Ctx {
+        cfg: Arc::clone(&cfg),
+        log: Arc::clone(&log),
+        backends: Arc::new(PanicsOnce {
+            calls: Arc::clone(&calls),
+        }) as Arc<dyn Backends>,
+        udp: None,
+    });
+    let pool = WorkerPool::start(ctx);
+    let listener = listener::bind_tcp("127.0.0.1", 0, cfg.socket_backlog).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let term = Arc::new(AtomicBool::new(false));
+    let submit = pool.submitter();
+    let (term_c, cfg_c, log_c) = (Arc::clone(&term), Arc::clone(&cfg), Arc::clone(&log));
+    let accept = std::thread::spawn(move || {
+        listener::serve_stream(StreamListener::Tcp(listener), submit, term_c, cfg_c, log_c)
+    });
+
+    // The message that faults: no acknowledgement, by definition
+    let first = exchange(addr, &valid_message());
+    assert_ne!(first, "ACKUPDATE", "the panicking push still acknowledged");
+
+    // The one that matters: the pool must still be there to serve it
+    let second = exchange(addr, &valid_message());
+    assert_eq!(
+        second, "ACKUPDATE",
+        "the only worker died with the first message"
+    );
+    // The message carries both families, so the second is pushed twice: what
+    // matters is that a push happened at all after the panic
+    assert!(
+        calls.load(Ordering::SeqCst) > 1,
+        "no PF write followed the panic"
+    );
+
+    term.store(true, Ordering::Relaxed);
+    let _ = accept.join();
+    pool.shutdown();
+}

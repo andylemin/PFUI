@@ -69,8 +69,29 @@ pub trait Backends: Send + Sync {
     fn file_push(&self, file: &Path, ips: &[String]);
 }
 
-pub trait Stream: Read + Write + Send {}
-impl<T: Read + Write + Send> Stream for T {}
+pub trait Stream: Read + Write + Send {
+    /// Send FIN on the write half, leaving the read half open.
+    ///
+    /// An acknowledgement is not length-prefixed, so a client cannot know it has
+    /// the whole reply until the connection closes. Half-closing as soon as the
+    /// ACK is flushed is what releases the resolver at the table update rather
+    /// than at the end of the message, which is the point of the PF, ACKUPDATE,
+    /// Redis, persist order. Failure is ignored: a client that has already gone
+    /// is routine, and the addresses are installed either way.
+    fn shutdown_write(&mut self);
+}
+
+impl Stream for std::net::TcpStream {
+    fn shutdown_write(&mut self) {
+        let _ = self.shutdown(std::net::Shutdown::Write);
+    }
+}
+
+impl Stream for std::os::unix::net::UnixStream {
+    fn shutdown_write(&mut self) {
+        let _ = self.shutdown(std::net::Shutdown::Write);
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StreamKind {
@@ -292,6 +313,17 @@ fn handle_stream(_kind: StreamKind, conn: &mut dyn Stream, peer: &str, ctx: &Ctx
         } => {
             act(ctx, kind, &qname, &af4, &af6, || {
                 reply(conn, ACK_UPDATE);
+                // Released here, before Redis and the persist file: PF already
+                // passes the traffic, so the resolver has nothing left to wait
+                // for. Holding the socket open until this function returned made
+                // it wait for both, since it reads the reply until EOF.
+                conn.shutdown_write();
+                if let Some(t0) = started {
+                    ctx.log.info(&format!(
+                        "latency microsecs to ack={:.2}",
+                        t0.elapsed().as_secs_f64() * 1e6
+                    ));
+                }
             });
             if let Some(t0) = started {
                 ctx.log.info(&format!(
@@ -347,6 +379,32 @@ fn handle_datagram(data: &[u8], source: SocketAddr, ctx: &Ctx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both stream transports must release the reader, not just TCP: a reply is
+    /// unframed, so the peer's read ends only at EOF, and handle_stream is shared
+    /// by both. A no-op impl here would leave a resolver on the local socket
+    /// waiting for Redis and the persist write.
+    #[test]
+    fn shutdown_write_ends_the_readers_reply() {
+        use std::os::unix::net::UnixStream;
+
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        ours.write_all(ACK_UPDATE.as_bytes()).unwrap();
+        (&mut ours as &mut dyn Stream).shutdown_write();
+        let mut seen = String::new();
+        theirs.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, ACK_UPDATE, "unix peer never saw the end of the reply");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.write_all(ACK_UPDATE.as_bytes()).unwrap();
+        (&mut server as &mut dyn Stream).shutdown_write();
+        let mut seen = String::new();
+        client.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, ACK_UPDATE, "tcp peer never saw the end of the reply");
+    }
 
     #[test]
     fn every_refusal_reason_is_documented() {

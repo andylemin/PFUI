@@ -1,6 +1,9 @@
 """PFUI wire format; a 4-byte big-endian length prefix followed by (optionally
 lz4 compressed) JSON.
 
+lz4 is an optional dependency: it is needed only when COMPRESS is on, and
+HAVE_LZ4 reports whether it is available.
+
 The length prefix replaces an in-band b"EOT" footer. lz4 output is arbitrary
 binary and can contain those bytes, so a footer scan both truncated messages
 early and missed real ends that straddled chunk boundaries.
@@ -9,7 +12,16 @@ early and missed real ends that straddled chunk boundaries.
 from json import dumps, loads
 from struct import Struct
 
-import lz4.frame
+try:
+    import lz4.frame
+except ImportError:
+    # Only a compressed payload needs it, and COMPRESS: False is how an operator
+    # says there will not be one. Importing it unconditionally made the package
+    # mandatory even then, so a resolver with compression off still could not
+    # load this module.
+    lz4 = None
+
+HAVE_LZ4 = lz4 is not None
 
 HEADER = Struct("!I")  # 4-byte big-endian payload length
 MAX_MESSAGE = 1 << 20  # 1 MiB ceiling per PFUI message
@@ -32,13 +44,27 @@ class Truncated(WireError):
     """The header was complete but the payload stopped short of it."""
 
 
+def _codec():
+    """lz4.frame, or a WireError naming what to install.
+
+    Raised rather than returned so a caller that asked for compression cannot
+    silently send plain JSON, which the far end would refuse as a mismatch.
+    """
+    if not HAVE_LZ4:
+        raise WireError(
+            "COMPRESS is on but the lz4 package is not installed; install "
+            "py3-lz4, or set COMPRESS: False on the resolver and the firewall"
+        )
+    return lz4.frame
+
+
 def encode_payload(msg: dict, compress: bool = True) -> bytes:
     """Serialise one PFUI message, unframed. UDP datagrams are self-delimiting
     and carry the payload alone; only the TCP stream needs a length prefix.
     """
     payload = dumps(msg).encode("utf-8")
     if compress:
-        payload = lz4.frame.compress(payload)
+        payload = _codec().compress(payload)
     if len(payload) > MAX_MESSAGE:
         raise WireError(f"payload of {len(payload)} bytes exceeds {MAX_MESSAGE}")
     return payload
@@ -61,7 +87,7 @@ def decompress_bounded(blob: bytes, limit: int = MAX_MESSAGE) -> bytes:
     it can be allocated. `max_length` caps what the decompressor produces, so an
     oversize frame stops at the ceiling with `eof` still unset.
     """
-    decompressor = lz4.frame.LZ4FrameDecompressor()
+    decompressor = _codec().LZ4FrameDecompressor()
     out = decompressor.decompress(blob, max_length=limit)
     if not decompressor.eof:
         raise WireError(f"decompressed payload exceeds {limit} bytes")
