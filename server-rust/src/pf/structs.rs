@@ -105,12 +105,22 @@ pub fn pfr_addr_of(ip: &IpAddr) -> PfrAddr {
 
 /// The address back out of a kernel-filled entry, canonicalised so table reads
 /// agree with Redis keys.
+///
+/// None for anything that is not a plain host entry. A table may also hold
+/// networks and negations, from pf.conf or an operator's own pfctl, and those
+/// were reported as the bare address they start with: the sync loop then saw an
+/// address with no Redis key, called it orphaned, and issued a host delete every
+/// scan that could not match the entry it came from. PFUI only ever adds
+/// host-width, non-negated addresses, so nothing it manages is hidden by this.
 pub fn ip_of(a: &PfrAddr) -> Option<IpAddr> {
-    if a.pfra_af == libc::AF_INET as u8 {
+    if a.pfra_not != 0 {
+        return None;
+    }
+    if a.pfra_af == libc::AF_INET as u8 && a.pfra_net == 32 {
         let mut o = [0u8; 4];
         o.copy_from_slice(&a.pfra_u[..4]);
         Some(IpAddr::from(o))
-    } else if a.pfra_af == libc::AF_INET6 as u8 {
+    } else if a.pfra_af == libc::AF_INET6 as u8 && a.pfra_net == 128 {
         Some(IpAddr::from(a.pfra_u))
     } else {
         None
@@ -181,5 +191,29 @@ mod tests {
     fn unknown_af_yields_no_address() {
         let a = PfrAddr::zeroed();
         assert_eq!(ip_of(&a), None);
+    }
+
+    #[test]
+    fn a_network_or_negated_entry_is_not_read_as_a_host() {
+        // sync_pf_table deletes any table address with no Redis key. Reporting
+        // 10.0.0.0/8 as 10.0.0.0, or !192.0.2.1 as 192.0.2.1, made the daemon
+        // try to withdraw entries it never added and could not match.
+        let mut network = pfr_addr_of(&"10.0.0.0".parse::<IpAddr>().unwrap());
+        network.pfra_net = 8;
+        assert_eq!(ip_of(&network), None, "a /8 was read as a host");
+
+        let mut network6 = pfr_addr_of(&"2001:db8::".parse::<IpAddr>().unwrap());
+        network6.pfra_net = 32;
+        assert_eq!(ip_of(&network6), None, "a /32 v6 prefix was read as a host");
+
+        let mut negated = pfr_addr_of(&"192.0.2.1".parse::<IpAddr>().unwrap());
+        negated.pfra_not = 1;
+        assert_eq!(ip_of(&negated), None, "a negated entry was read as a host");
+
+        // What PFUI itself writes still round-trips
+        for text in ["8.8.8.8", "2606:4700::1111"] {
+            let ip: IpAddr = text.parse().unwrap();
+            assert_eq!(ip_of(&pfr_addr_of(&ip)), Some(ip));
+        }
     }
 }
