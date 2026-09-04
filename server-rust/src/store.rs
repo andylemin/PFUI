@@ -69,6 +69,32 @@ pub trait Db {
     ) -> Result<Vec<Option<HashMap<String, String>>>, DbError>;
 }
 
+/// Longest an entry may authorise egress for, whatever the sender asked.
+///
+/// A TTL arrives from a DNS answer over an unauthenticated transport, so it is
+/// attacker-influenced in two ways: an authoritative server chooses it, and
+/// anything permitted to reach the listener can send one. Unbounded, a single
+/// large value pins its address in the PF table for the life of the daemon,
+/// because both the Redis backstop and the scan loop derive their windows from
+/// it. Seven days is far above any legitimate TTL times TTL_MULTIPLIER and far
+/// below forever.
+pub const MAX_ENTRY_LIFETIME: i64 = 7 * 24 * 3600;
+
+/// How long an rr record may live, bounded. Used by the Redis backstop and by
+/// the scan loop, which have to agree or an entry lingers in whichever store
+/// reads it as fresher.
+fn rr_window(ttl: i64, multiplier: u32) -> i64 {
+    ttl.saturating_mul(multiplier as i64)
+        .clamp(0, MAX_ENTRY_LIFETIME)
+}
+
+/// When a cache record's absolute expiry falls, bounded relative to when it was
+/// recorded. A sender-supplied expiry far in the future is capped, and one
+/// already in the past stays in the past.
+fn cache_deadline(expires: i64, epoch: i64) -> i64 {
+    expires.min(epoch.saturating_add(MAX_ENTRY_LIFETIME))
+}
+
 /// Backstop lifetime only; the scan loop owns expiry. Floored at 1 because
 /// Redis reads EXPIRE 0 as delete-now, which would discard a ttl-0 record
 /// before its own scan saw it.
@@ -110,7 +136,12 @@ pub fn db_push(
                     field: "ttl",
                 });
                 cmds.push(DbCmd::Expire {
-                    seconds: key_lifetime((rr_ttl - now).max(0), scan_period),
+                    seconds: key_lifetime(
+                        // Saturating: a sender-supplied expiry near i64::MIN
+                        // overflowed this subtraction
+                        cache_deadline(*rr_ttl, now).saturating_sub(now).max(0),
+                        scan_period,
+                    ),
                     key,
                 });
             }
@@ -129,10 +160,7 @@ pub fn db_push(
                     field: "expires",
                 });
                 cmds.push(DbCmd::Expire {
-                    seconds: key_lifetime(
-                        rr_ttl.saturating_mul(ttl_multiplier as i64),
-                        scan_period,
-                    ),
+                    seconds: key_lifetime(rr_window(*rr_ttl, ttl_multiplier), scan_period),
                     key,
                 });
             }
@@ -161,13 +189,13 @@ pub fn is_expired(meta: &HashMap<String, String>, now: i64, multiplier: u32) -> 
     let int = |field: &str| meta.get(field).and_then(|v| v.parse::<i64>().ok());
     match meta.get("kind").map(String::as_str) {
         Some("cache") => match int("expires") {
-            Some(expires) => expires <= now,
+            Some(expires) => cache_deadline(expires, int("epoch").unwrap_or(now)) <= now,
             None => true,
         },
         Some("rr") => match int("ttl") {
             Some(ttl) => {
                 let epoch = int("epoch").unwrap_or(now);
-                epoch.saturating_add(ttl.saturating_mul(multiplier as i64)) <= now
+                epoch.saturating_add(rr_window(ttl, multiplier)) <= now
             }
             None => true,
         },
@@ -661,5 +689,80 @@ mod tests {
                 qname: String::new()
             }]
         );
+    }
+
+    #[test]
+    fn a_huge_ttl_cannot_pin_an_address_forever() {
+        // A TTL arrives from a DNS answer over an unauthenticated transport, so
+        // it decides how long egress is authorised and cannot be unbounded
+        let meta = meta(&[
+            ("kind", "rr"),
+            ("ttl", &i64::MAX.to_string()),
+            ("epoch", &NOW.to_string()),
+        ]);
+        assert!(
+            !is_expired(&meta, NOW + MAX_ENTRY_LIFETIME - 1, 4),
+            "expired before the ceiling"
+        );
+        assert!(
+            is_expired(&meta, NOW + MAX_ENTRY_LIFETIME + 1, 4),
+            "an i64::MAX ttl outlived the ceiling"
+        );
+    }
+
+    #[test]
+    fn a_huge_cache_expiry_cannot_pin_an_address_forever() {
+        let meta = meta(&[
+            ("kind", "cache"),
+            ("expires", &i64::MAX.to_string()),
+            ("epoch", &NOW.to_string()),
+        ]);
+        assert!(!is_expired(&meta, NOW + MAX_ENTRY_LIFETIME - 1, 4));
+        assert!(
+            is_expired(&meta, NOW + MAX_ENTRY_LIFETIME + 1, 4),
+            "an i64::MAX expiry outlived the ceiling"
+        );
+    }
+
+    #[test]
+    fn the_redis_backstop_is_bounded_too() {
+        // The backstop and the scan loop must agree, or an entry lingers in
+        // whichever store reads it as fresher
+        let mut db = FakeDb::default();
+        push_one(&mut db, i64::MAX, Kind::Rr, 60, 4);
+        let expires: Vec<i64> = db
+            .cmds
+            .iter()
+            .filter_map(|c| match c {
+                DbCmd::Expire { seconds, .. } => Some(*seconds),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(expires, vec![MAX_ENTRY_LIFETIME + 60]);
+    }
+
+    #[test]
+    fn a_negative_cache_expiry_does_not_overflow() {
+        // rr_ttl - now panicked in debug and wrapped to a near-eternal lifetime
+        // in release for an expiry near i64::MIN
+        let mut db = FakeDb::default();
+        push_one(&mut db, i64::MIN, Kind::Cache, 60, 4);
+        for cmd in &db.cmds {
+            if let DbCmd::Expire { seconds, .. } = cmd {
+                assert!(
+                    (1..=MAX_ENTRY_LIFETIME + 60).contains(seconds),
+                    "lifetime {seconds} is out of range"
+                );
+            }
+        }
+        assert!(is_expired(
+            &meta(&[
+                ("kind", "cache"),
+                ("expires", &i64::MIN.to_string()),
+                ("epoch", &NOW.to_string()),
+            ]),
+            NOW,
+            4
+        ));
     }
 }
