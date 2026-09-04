@@ -74,3 +74,67 @@ def test_decompression_bomb_refused():
 def test_payload_at_ceiling_still_decodes():
     payload = encode_payload({"AF4": [], "AF6": [], "kind": "rr", "qname": "test."}, compress=True)
     assert decode_stream(frame(payload)) == {"AF4": [], "AF6": [], "kind": "rr", "qname": "test."}
+
+
+def _wire_without_lz4():
+    """Load a private copy of the module with the lz4 import failing.
+
+    A fresh instance rather than a reload: this module is shared by the resolver,
+    both daemons and the rest of these tests, and reloading it in place would
+    leave them holding a codec-less copy.
+    """
+    import builtins
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "lz4" or name.startswith("lz4."):
+            raise ImportError("no lz4 for this test")
+        return real_import(name, *args, **kwargs)
+
+    path = Path(__file__).resolve().parent.parent / "pfui_wire.py"
+    spec = importlib.util.spec_from_file_location("pfui_wire_no_lz4", path)
+    module = importlib.util.module_from_spec(spec)
+    builtins.__import__ = blocked
+    try:
+        for cached in ("lz4", "lz4.frame"):
+            sys.modules.pop(cached, None)
+        spec.loader.exec_module(module)
+    finally:
+        builtins.__import__ = real_import
+    return module
+
+
+def test_the_module_loads_and_works_without_lz4():
+    """lz4 is only needed when COMPRESS is on, so importing it unconditionally
+    made the package mandatory on a resolver that had compression off."""
+    wire = _wire_without_lz4()
+    assert wire.HAVE_LZ4 is False
+
+    msg = {"kind": "rr", "qname": "a.", "AF4": [{"ip": "8.8.8.8", "ttl": 60}], "AF6": []}
+    blob = wire.encode(msg, compress=False)
+    assert wire.decode_stream(blob, compress=False) == msg
+
+
+def test_asking_for_compression_without_lz4_says_what_to_install():
+    """It must not fall back to plain JSON: the far end would refuse that as a
+    COMPRESS mismatch, which is a much harder fault to read."""
+    wire = _wire_without_lz4()
+    msg = {"kind": "rr", "qname": "a.", "AF4": [], "AF6": []}
+
+    with pytest.raises(wire.WireError, match="lz4"):
+        wire.encode_payload(msg, compress=True)
+    with pytest.raises(wire.WireError, match="lz4"):
+        wire.decompress_bounded(b"whatever")
+
+
+def test_lz4_is_still_used_when_it_is_present():
+    """The optional import must not have turned compression off for everyone."""
+    from pfui_wire import HAVE_LZ4 as available
+
+    assert available is True
+    msg = {"kind": "rr", "qname": "a.", "AF4": [{"ip": "1.1.1.1", "ttl": 5}], "AF6": []}
+    assert encode_payload(msg, compress=True) != encode_payload(msg, compress=False)
