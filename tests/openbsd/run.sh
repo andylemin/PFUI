@@ -100,6 +100,7 @@ since_mark() { sed -n "/$MARK/,\$p" $DAEMON_LOG; }
 logged() { since_mark | grep -q "$1"; }
 
 redis_up() { [ "$(redis-cli ping 2>/dev/null)" = PONG ]; }
+redis_down() { ! redis_up; }
 
 in_table() { pfctl -t "$1" -T show 2>/dev/null | tr -d ' ' | grep -qx "$2"; }
 not_in_table() { ! in_table "$@"; }
@@ -334,6 +335,13 @@ run_pass() {
 	resolve $NAME >/dev/null
 	retry 10 "the Redis record did not flip to kind cache" redis_kind_is $TABLE4 "$ip" cache
 
+	# The ack precedes the store writes, so an ack with no total is a worker
+	# stuck in one
+	acks=$(since_mark | grep -c "latency microsecs to ack=" || true)
+	totals=$(since_mark | grep -c "latency microsecs total=" || true)
+	[ "$acks" = "$totals" ] \
+		|| fail "$acks messages acknowledged but $totals finished; a worker is stuck in a store"
+
 	# The sync loop must have read the table by now
 	sleep 6
 	logged "Scan for expiring $TABLE4" || fail "the sync loop did not run"
@@ -361,6 +369,9 @@ expiry_pass() {
 	retry 30 "$CRAFTED_IP is still in $PERSIST4" not_in_persist $PERSIST4 $CRAFTED_IP
 	logged "TTL expired from $TABLE4: $CRAFTED_IP (expiry.pfui-e2e.)" \
 		|| fail "the expiry was not logged with its domain"
+	logged "$TABLE4: .* expired, table " \
+		|| fail "the cycle that expired an address logged no summary"
+	since_mark | grep "$TABLE4: .* expired, table " | tail -1
 	rcctl stop pfui_firewall >/dev/null 2>&1 || fail "pfui_firewall did not stop"
 	[ ! -e $SOCK ] || fail "$SOCK was left behind after stop"
 	note "ok"
@@ -382,6 +393,73 @@ reload_pass() {
 	not_in_table $TABLE4 $CRAFTED_IP || fail "flush left $CRAFTED_IP in the table"
 	pfctl -f /etc/pf.conf || fail "pf.conf did not reload"
 	in_table $TABLE4 $CRAFTED_IP || fail "the reload did not restore $CRAFTED_IP from $PERSIST4"
+	note "ok"
+}
+
+upgrade_pass() {
+	step "pass upgrade: the installer restarts a running daemon and keeps its config"
+	clear_state
+	write_daemon_config tcp IOCTL
+	mark upgrade
+	start_daemon tcp
+	send_crafted 127.0.0.1:10001 before.pfui-e2e. $CRAFTED_IP 3600 \
+		|| fail "the daemon was not serving before the upgrade"
+	before=$(pgrep -f /usr/local/sbin/pfui_firewall | sort | tr '\n' ' ')
+	cp /etc/pfui_firewall.yml /tmp/pfui-config-before-upgrade.yml
+
+	{ rc=0; bash "$ROOT/install-server-rust.sh" || rc=$?; echo "$rc" > /tmp/rc.upgrade; } 2>&1 \
+		| tee /tmp/install-upgrade.log
+	[ "$(cat /tmp/rc.upgrade)" = 0 ] || fail "the installer failed on an upgrade"
+	grep -q "Stopping pfui_firewall to upgrade it" /tmp/install-upgrade.log \
+		|| fail "the installer did not stop the running daemon"
+	grep -q "running the version just installed" /tmp/install-upgrade.log \
+		|| fail "the installer did not report the daemon restarted"
+
+	retry 20 "pfui_firewall is not running after the upgrade" rcctl check pfui_firewall
+	after=$(pgrep -f /usr/local/sbin/pfui_firewall | sort | tr '\n' ' ')
+	[ -n "$after" ] || fail "no pfui_firewall process after the upgrade"
+	[ "$before" != "$after" ] || fail "the daemon was never restarted (pids $before)"
+	cmp -s /tmp/pfui-config-before-upgrade.yml /etc/pfui_firewall.yml \
+		|| fail "the upgrade replaced /etc/pfui_firewall.yml"
+	send_crafted 127.0.0.1:10001 after.pfui-e2e. $CRAFTED_IP 3600 \
+		|| fail "the daemon is not serving after the upgrade"
+	note "ok"
+}
+
+# A daemon the operator had stopped must stay stopped.
+no_start_pass() {
+	step "pass upgrade: a stopped daemon is left stopped"
+	clear_state
+	write_daemon_config tcp IOCTL
+	if rcctl check pfui_firewall >/dev/null 2>&1; then
+		fail "the daemon is running before this pass"
+	fi
+	{ rc=0; bash "$ROOT/install-server-rust.sh" || rc=$?; echo "$rc" > /tmp/rc.nostart; } 2>&1 \
+		| tee /tmp/install-nostart.log
+	[ "$(cat /tmp/rc.nostart)" = 0 ] || fail "the installer failed on a stopped host"
+	! grep -q "Stopping pfui_firewall" /tmp/install-nostart.log \
+		|| fail "the installer stopped a daemon that was not running"
+	! rcctl check pfui_firewall >/dev/null 2>&1 \
+		|| fail "the installer started a daemon the operator had stopped"
+	grep -q "Start service" /tmp/install-nostart.log \
+		|| fail "the installer did not advise how to start it"
+	note "ok"
+}
+
+# rc_pre starts Redis when REDIS_HOST is local.
+redis_dependency_pass() {
+	step "pass redis: starting the daemon starts a stopped local Redis"
+	clear_state
+	write_daemon_config tcp IOCTL
+	mark redis-dep
+	rcctl stop redis >/dev/null 2>&1 || fail "cannot stop redis"
+	retry 10 "redis is still answering after a stop" redis_down
+	rcctl start pfui_firewall || fail "pfui_firewall did not start"
+	retry 20 "rc.d did not start redis" redis_up
+	retry 20 "pfui_firewall is not running" rcctl check pfui_firewall
+	send_crafted 127.0.0.1:10001 redis.pfui-e2e. $CRAFTED_IP 3600 \
+		|| fail "the daemon is not serving"
+	retry 10 "$CRAFTED_IP was not recorded in Redis" in_redis $TABLE4 $CRAFTED_IP
 	note "ok"
 }
 
@@ -408,12 +486,18 @@ rust_tests() {
 	cd "$ROOT/server-rust"
 	export CARGO_HOME=$BUILD_ROOT/cargo
 	export CARGO_TARGET_DIR=$BUILD_ROOT/target
-	# Streamed and bounded, so a hang is named rather than silent
-	{ rc=0; timeout 900 cargo test --release --locked || rc=$?; echo "$rc" > /tmp/rc.cargo; } 2>&1 \
-		| grep -vE '^\s+(Compiling|Downloaded|Downloading)' | tee /tmp/cargo-test.log
-	[ "$(cat /tmp/rc.cargo)" = 0 ] || fail "cargo test failed (exit $(cat /tmp/rc.cargo); 124 is the timeout)"
+	# Timed separately: the test crates pull in dev-dependencies the daemon build
+	# does not, and compiling them dominates this step in a VM
+	{ rc=0; timeout 1800 cargo test --release --locked --no-run || rc=$?
+	  echo "$rc" > /tmp/rc.build; } 2>&1 | tee /tmp/cargo-build.log
+	[ "$(cat /tmp/rc.build)" = 0 ] \
+		|| fail "compiling the tests failed (exit $(cat /tmp/rc.build); 124 is the timeout)"
+	{ rc=0; timeout 600 cargo test --release --locked || rc=$?
+	  echo "$rc" > /tmp/rc.cargo; } 2>&1 | tee /tmp/cargo-test.log
+	[ "$(cat /tmp/rc.cargo)" = 0 ] \
+		|| fail "cargo test failed (exit $(cat /tmp/rc.cargo); 124 is the timeout)"
 	{ rc=0; PFUI_TEST_TABLE4=$TABLE4 PFUI_TEST_TABLE6=$TABLE6 \
-		timeout 300 cargo test --release --locked --test pf_ioctl_live -- --ignored --test-threads=1 \
+		timeout 600 cargo test --release --locked --test pf_ioctl_live -- --ignored --test-threads=1 \
 		|| rc=$?; echo "$rc" > /tmp/rc.live; } 2>&1 | tee /tmp/cargo-live.log
 	[ "$(cat /tmp/rc.live)" = 0 ] || fail "the live ioctl suite failed (exit $(cat /tmp/rc.live))"
 	pfctl -t $TABLE4 -T flush >/dev/null 2>&1 || true
@@ -427,9 +511,13 @@ latency_summary() {
 	grep -h "latency microsecs" $DAEMON_LOG | tail -8 || true
 	grep -h "Query Unblocked" $DAEMON_LOG | tail -4 || true
 	grep -h "latency microsecs" $DAEMON_LOG | awk '
-		/to ack=/ { sub(/.*to ack=/, ""); ack = $1 + 0; have = 1; next }
-		/total=/  { if (have) { sub(/.*total=/, ""); if (ack > $1 + 0) bad++; n++; have = 0 } }
-		END { printf "    pairs=%d out_of_order=%d\n", n, bad; exit (bad > 0) }' \
+		/to ack=/ { sub(/.*to ack=/, ""); ack[++a] = $1 + 0; next }
+		/total=/  { sub(/.*total=/, ""); tot[++t] = $1 + 0 }
+		END {
+			for (i = 1; i <= a && i <= t; i++) if (ack[i] > tot[i]) bad++
+			printf "    acks=%d totals=%d out_of_order=%d\n", a, t, bad
+			exit (bad > 0)
+		}' \
 		|| fail "an acknowledgement was logged after its total"
 }
 
@@ -472,8 +560,11 @@ for ctl in IOCTL PFCTL; do
 done
 expiry_pass
 reload_pass
+upgrade_pass
+no_start_pass
+redis_dependency_pass
 fail_loud_pass
 latency_summary
 stop_all
 
-step "complete: $PASSES transport/control passes, expiry, reload and fail-loud all passed"
+step "complete: $PASSES transport/control passes, plus expiry, reload, upgrade and fail-loud"

@@ -5,14 +5,6 @@ name: openbsd
 # The daemon's ioctl, unveil and pledge code compiles on no other platform.
 
 on:
-  pull_request:
-    paths:
-      - 'server-rust/**'
-      - 'client-unbound/**'
-      - 'protocol/**'
-      - 'install-*.sh'
-      - 'tests/openbsd/**'
-      - '.github/workflows/openbsd.yml'
   push:
     paths:
       - 'server-rust/**'
@@ -34,6 +26,10 @@ on:
       unbound_version:
         description: 'Unbound to build: latest, master, or a release-* tag'
         default: 'latest'
+
+concurrency:
+  group: openbsd-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   end-to-end:

@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::logger::Logger;
@@ -20,6 +21,11 @@ pub struct RealBackends {
     client: redis::Client,
     pf_dev: SharedDev,
 }
+
+/// Connect, read and write block indefinitely by default, and a worker stuck in
+/// one is a worker the pool has lost. Generous, because the store runs after the
+/// acknowledgement.
+const REDIS_TIMEOUT: Duration = Duration::from_secs(5);
 
 thread_local! {
     // One connection per thread, opened lazily and dropped on any error so
@@ -71,7 +77,14 @@ impl RealBackends {
         CONN.with(|slot| {
             let mut slot = slot.borrow_mut();
             if slot.is_none() {
-                *slot = Some(self.client.get_connection().map_err(|e| e.to_string())?);
+                let conn = self
+                    .client
+                    .get_connection_with_timeout(REDIS_TIMEOUT)
+                    .map_err(|e| e.to_string())?;
+                conn.set_read_timeout(Some(REDIS_TIMEOUT))
+                    .and_then(|()| conn.set_write_timeout(Some(REDIS_TIMEOUT)))
+                    .map_err(|e| e.to_string())?;
+                *slot = Some(conn);
             }
             match f(slot.as_mut().expect("connection present")) {
                 Ok(v) => Ok(v),

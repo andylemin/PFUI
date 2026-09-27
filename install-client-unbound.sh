@@ -381,8 +381,16 @@ if [[ "$OS" = "OpenBSD" ]]; then
   [ -f "${TARGET}/update_root_hints.sh" ] && mv "${TARGET}/update_root_hints.sh" "${TARGET}/update_root_hints.sh.${HOUR}"
   # root-owned: these run from cron with the privilege to write /var/unbound and restart the service
   install -m 755 -o root -g wheel "${DIR}"/client-unbound/tools/update_root_hints.sh ${TARGET}/update_root_hints.sh
-  [ -f "${TARGET}/update_dns_blocklist.sh" ] && mv "${TARGET}/update_dns_blocklist.sh" "${TARGET}/update_dns_blocklist.sh.${HOUR}"
-  install -m 755 -o root -g wheel "${DIR}"/client-unbound/tools/update_dns_blocklist.sh ${TARGET}/update_dns_blocklist.sh
+  # The sources, allowlist hook and thresholds are meant to be edited, so an
+  # existing copy is kept
+  if [ -f "${TARGET}/update_dns_blocklist.sh" ]; then
+    echo "PFUIDNS: Keeping the existing ${TARGET}/update_dns_blocklist.sh"
+    echo "PFUIDNS: (the shipped version is ${DIR}/client-unbound/tools/update_dns_blocklist.sh)"
+  else
+    install -m 755 -o root -g wheel "${DIR}"/client-unbound/tools/update_dns_blocklist.sh \
+      ${TARGET}/update_dns_blocklist.sh || die "cannot install update_dns_blocklist.sh"
+    echo "PFUIDNS: Installed ${TARGET}/update_dns_blocklist.sh (HaGeZi pro + tif)"
+  fi
   echo "New scripts: ${TARGET}/update_root_hints.sh, ${TARGET}/update_dns_blocklist.sh"
 
   # The resolver's own config carries an operator's whole ruleset, so an
