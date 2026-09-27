@@ -37,8 +37,11 @@ if [ -n "${CURL_FAIL:-}" ]; then
   esac
 fi
 lines=${CURL_LINES:-1200}
-awk -v n="$lines" 'BEGIN { for (i = 0; i < n; i++) print "0.0.0.0 bad" i ".example.com" }' \
-  > "$dest"
+{
+  echo "# Title: stub list"
+  echo "!"
+  awk -v n="$lines" 'BEGIN { for (i = 0; i < n; i++) print "bad" i ".example.com" }'
+} > "$dest"
 """
 
 RECORDER_STUB = r"""#!/usr/bin/env bash
@@ -113,16 +116,16 @@ def test_norestart_publishes_without_restarting(harness):
 
 
 def test_a_failed_source_falls_back_to_the_mirror(harness):
-    """The StevenBlack lists have a second URL; using it is not a failure."""
+    """Each list has a second URL; using it is not a failure."""
     result = harness.run(CURL_FAIL="raw.githubusercontent.com")
     assert result.returncode == 0, result.stderr.decode()
-    assert "sbc.io" in harness.calls()
+    assert "jsdelivr" in harness.calls()
     assert harness.lines()
 
 
 def test_a_source_that_cannot_be_downloaded_at_all_aborts(harness):
     """No previous copy to fall back on, so there is nothing to publish."""
-    result = harness.run(CURL_FAIL="hosts")
+    result = harness.run(CURL_FAIL="onlydomains")
     assert result.returncode != 0
     assert harness.lines() is None, "published a list built from a failed download"
     assert "rcctl" not in harness.calls(), "restarted the resolver anyway"
@@ -134,7 +137,7 @@ def test_a_source_that_fails_today_is_reused_from_yesterday(harness):
     assert harness.run("norestart").returncode == 0
     before = harness.lines()
 
-    result = harness.run("norestart", CURL_FAIL="pgl.yoyo.org")
+    result = harness.run("norestart", CURL_FAIL="tif-onlydomains")
     assert result.returncode == 0, result.stderr.decode()
     assert harness.lines() == before, "reusing a cached source lost domains"
 
@@ -148,7 +151,7 @@ def test_a_previously_published_list_survives_a_failed_run(harness):
         if stale.name != "dns_blocklist":
             stale.unlink()
 
-    result = harness.run(CURL_FAIL="hosts")
+    result = harness.run(CURL_FAIL="onlydomains")
     assert result.returncode != 0
     assert harness.lines() == before, "a failed run replaced a working blocklist"
     assert "rcctl" not in harness.calls(), "restarted the resolver anyway"
@@ -194,3 +197,23 @@ def test_no_staging_files_are_left_behind(harness):
     harness.run("norestart", CURL_LINES=3)  # Refused
     leftovers = [p.name for p in harness.etc.iterdir() if ".new." in p.name]
     assert leftovers == [], f"left {leftovers} in place"
+
+
+def test_only_plausible_domains_reach_unbound(harness):
+    """HaGeZi's files carry a header, and the wildcard variants carry '*.'
+    prefixes. A line Unbound cannot parse as a local-zone takes the whole
+    include file with it, so anything that is not a domain is dropped."""
+    extra = "\n".join(
+        [
+            'echo "*.wildcard.example"',
+            'echo "0.0.0.0 hosts-format.example"',
+            'echo "not a domain at all"',
+        ]
+    )
+    stub = harness.etc.parent / "bin" / "curl"
+    stub.write_text(stub.read_text().replace("} > \"$dest\"", extra + "\n} > \"$dest\""))
+    assert harness.run("norestart").returncode == 0
+    published = "\n".join(harness.lines())
+    assert "bad1.example.com" in published
+    for rejected in ("wildcard.example", "0.0.0.0 hosts-format", "not a domain"):
+        assert rejected not in published, f"{rejected!r} reached the include file"

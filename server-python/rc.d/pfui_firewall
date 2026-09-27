@@ -26,6 +26,21 @@ rc_pre() {
 		install -d -o _pfui_firewall -g _pfui_firewall -m 755 /var/run/pfui
 	fi
 	chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf
+
+	# The daemon whitelists without Redis, but nothing expires until it appears.
+	# Never fatal: a non-zero rc_pre would abort a start the daemon can manage.
+	# Only a local REDIS_HOST is ours to start.
+	redis_host=$(sed -n 's/^[[:space:]]*REDIS_HOST:[[:space:]]*\([^[:space:]#]*\).*/\1/p' \
+	    /etc/pfui_firewall.yml 2>/dev/null | tr -d "\"'" | tail -1)
+	case "${redis_host:-127.0.0.1}" in
+	127.*|::1|localhost)
+		if ! rcctl check redis >/dev/null 2>&1; then
+			echo "pfui_firewall: starting redis first"
+			rcctl start redis >/dev/null 2>&1 || \
+			    echo "pfui_firewall: redis did not start; nothing will expire until it does"
+		fi
+		;;
+	esac
 }
 
 # The daemon takes its verb positionally, so ${daemon} ${daemon_flags} cannot be

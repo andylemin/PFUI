@@ -280,9 +280,12 @@ Edit _unbound user's crontab to; import domain lists / execute 'unbound-control 
 NB; If you want to keep the `unbound-control` cron commands under the _adblock user, you will need to add _adblock to _unbound group.
 
 NB; `client-unbound/tools/update_dns_blocklist.sh` is an alternative to
-unbound-adblock that ships with PFUI. It still fetches StevenBlack's hosts-format
-lists, so it converts with a hosts parser; pointing it at HaGeZi means reading the
-domain-only format instead.
+unbound-adblock that ships with PFUI. It fetches the same two HaGeZi lists,
+`pro` and `tif`, converts them to Unbound's local-zone format and publishes one
+file for `include:`. It refuses to publish a list that is short or has shrunk
+sharply, so a failed download cannot quietly turn the filter off. An existing
+copy is never replaced by the installer, since the sources and thresholds are
+meant to be edited.
 
 References;\
 HaGeZi's lists and what each tier blocks: https://github.com/hagezi/dns-blocklists \

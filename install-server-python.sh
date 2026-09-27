@@ -26,6 +26,32 @@ add_pkg() {
   done
 }
 
+# install(1) renames into place, so a binary replaced under a running daemon
+# leaves that daemon on the old inode.
+SERVICE_WAS_RUNNING=no
+
+stop_for_upgrade() {
+  rcctl check pfui_firewall >/dev/null 2>&1 || return 0
+  SERVICE_WAS_RUNNING=yes
+  echo "PFUIFW: Stopping pfui_firewall to upgrade it"
+  rcctl stop pfui_firewall >/dev/null 2>&1 \
+    || die "cannot stop pfui_firewall; stop it by hand and re-run"
+}
+
+# Only what was running is started. A failure is loud: the firewall was
+# whitelisting a moment ago.
+start_after_upgrade() {
+  [ "${SERVICE_WAS_RUNNING}" = yes ] || return 0
+  echo "PFUIFW: Starting pfui_firewall"
+  if rcctl start pfui_firewall; then
+    return 0
+  fi
+  err=1
+  echo "PFUIFW: FAILED to start pfui_firewall, which was running before this" >&2
+  echo "        upgrade, so this firewall is not whitelisting now. Its reason:" >&2
+  echo "        tail /var/log/daemon | grep pfui_firewall" >&2
+}
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 HOUR=$(date +%d-%b-%H_%M)
 
@@ -118,6 +144,8 @@ if [[ "$OS" = "OpenBSD" ]]; then
   python3 -c "import lz4.frame, yaml, redis, service" \
     || die "dependencies are not importable by $(command -v python3)"
 
+  stop_for_upgrade
+
   echo "PFUIFW: Installing PFUI Firewall Service (will backup any existing pfui_firewall configuration)"
   install -m 755 -o root -g wheel "${DIR}"/server-python/pfui_firewall.py /usr/local/sbin/pfui_firewall \
     || die "cannot install the daemon"
@@ -186,14 +214,20 @@ if [[ "$OS" = "OpenBSD" ]]; then
   echo "PFUIFW: NOTE point pf.conf 'persist file' paths at ${PERSIST_DIR}/ipv{4,6}_domains (see /etc/pf-pfui-example.conf)"
 fi
 
+start_after_upgrade
+
 if [[ $err != 0 ]]; then
   echo "PFUIFW: All Completed, but with some errors. Please investigate."
   exit 1
 else
   echo "PFUIFW: All Completed successfully."
 fi
-echo "PFUIFW: Enable service 'rcctl enable pfui_firewall'"
-echo "PFUIFW: Start service 'rcctl start pfui_firewall'"
+if [ "${SERVICE_WAS_RUNNING}" = yes ]; then
+  echo "PFUIFW: pfui_firewall is running the version just installed"
+else
+  echo "PFUIFW: Enable service 'rcctl enable pfui_firewall'"
+  echo "PFUIFW: Start service 'rcctl start pfui_firewall'"
+fi
 echo
 echo "PFUIFW: If PFUI_Unbound runs on THIS host, uncomment SOCKET_UNIX in"
 echo "        /etc/pfui_firewall.yml and add '- SOCKET: /var/run/pfui/pfui_firewall.sock'"

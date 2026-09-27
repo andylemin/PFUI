@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-# Example DNS BlockList script to download common bad domains from some example well known sources
+# Example DNS BlockList script: HaGeZi's pro and tif domain lists, converted to
+# Unbound's local-zone format and published as one file for 'include:'.
+# https://github.com/hagezi/dns-blocklists
 
 set -u
 
@@ -52,10 +54,12 @@ require() {
   [ -s "$1" ] || die "$2 is unavailable and no previous copy exists ($1)"
 }
 
-# hosts_to_unbound <raw> <unbound-format>
-hosts_to_unbound() {
-  grep '^0\.0\.0\.0' "$1" \
-    | awk '{print "local-zone: \""$2"\" redirect\nlocal-data: \""$2" A 0.0.0.0\""}' \
+# domains_to_unbound <domain list> <unbound-format>
+# One domain per line, with comments and a header. A line Unbound cannot parse as
+# a local-zone takes the whole include file with it, so only domains are written.
+domains_to_unbound() {
+  grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' "$1" \
+    | awk '{print "local-zone: \""$1"\" redirect\nlocal-data: \""$1" A 0.0.0.0\""}' \
     > "$2"
 }
 
@@ -63,41 +67,33 @@ lines() { wc -l < "$1" | tr -d '[:space:]'; }
 
 log info "Updating DNS Domain Filter Lists"
 
-# https://github.com/StevenBlack/hosts
-SB_BASE=https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates
-# Fallback is plain HTTP and unauthenticated: content is not verified
-SB_MIRROR=http://sbc.io/hosts/alternates
+# https://github.com/hagezi/dns-blocklists
+# The -onlydomains variants only: wildcard/*.txt carries '*.' prefixes and
+# adblock/ carries ABP filter syntax, neither of which Unbound loads.
+HG_BASE=https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard
+# Same content, used only if the first fails
+HG_MIRROR=https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard
 
-log info "Downloading StevenBlack Bad Domains - Unified hosts (adware + malware) + fakenews + gambling"
-fetch "${ETC}/stephenblack_adware_malware_fakenews_gambling-raw" \
-  "${SB_BASE}/fakenews-gambling/hosts" \
-  "${SB_MIRROR}/fakenews-gambling/hosts"
-require "${ETC}/stephenblack_adware_malware_fakenews_gambling-raw" \
-  "StevenBlack fakenews-gambling list"
+# pro: ads, tracking and telemetry. tif: malware, phishing and scams.
+for list in pro tif; do
+  log info "Downloading HaGeZi ${list} domains"
+  fetch "${ETC}/hagezi_${list}-raw" \
+    "${HG_BASE}/${list}-onlydomains.txt" \
+    "${HG_MIRROR}/${list}-onlydomains.txt"
+  require "${ETC}/hagezi_${list}-raw" "HaGeZi ${list} list"
+done
 
-log info "Downloading StevenBlack Bad Domains - Unified hosts (adware + malware) + fakenews + gambling + social"
-fetch "${ETC}/stephenblack_adware_malware_fakenews_gambling_social-raw" \
-  "${SB_BASE}/fakenews-gambling-social/hosts" \
-  "${SB_MIRROR}/fakenews-gambling-social/hosts"
-require "${ETC}/stephenblack_adware_malware_fakenews_gambling_social-raw" \
-  "StevenBlack fakenews-gambling-social list"
-
-log info "Converting StevenBlack Bad Domains from RAW format to Unbound config format"
-hosts_to_unbound "${ETC}/stephenblack_adware_malware_fakenews_gambling-raw" \
-  "${ETC}/stephenblack_adware_malware_fakenews_gambling-unbound"
-hosts_to_unbound "${ETC}/stephenblack_adware_malware_fakenews_gambling_social-raw" \
-  "${ETC}/stephenblack_adware_malware_fakenews_gambling_social-unbound"
-
-echo
-log info "Downloading YoYo AdServers Bad Domains"
-fetch "${ETC}/yoyo_adservers-unbound" \
-  "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=unbound&showintro=0&mimetype=plaintext"
-require "${ETC}/yoyo_adservers-unbound" "YoYo AdServers list"
+log info "Converting HaGeZi domains to Unbound config format"
+for list in pro tif; do
+  domains_to_unbound "${ETC}/hagezi_${list}-raw" "${ETC}/hagezi_${list}-unbound"
+  [ -s "${ETC}/hagezi_${list}-unbound" ] \
+    || die "the HaGeZi ${list} list produced no usable domains"
+done
 
 echo
 log info "Merging all Bad Domains"
-cat "${ETC}/stephenblack_adware_malware_fakenews_gambling_social-unbound" \
-    "${ETC}/yoyo_adservers-unbound" > "${ETC}/dns_blocklist_all" \
+cat "${ETC}/hagezi_pro-unbound" "${ETC}/hagezi_tif-unbound" \
+    > "${ETC}/dns_blocklist_all" \
   || die "cannot write ${ETC}/dns_blocklist_all"
 
 echo

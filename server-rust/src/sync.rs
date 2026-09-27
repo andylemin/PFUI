@@ -32,8 +32,28 @@ pub trait SyncOps: Send + Sync {
     fn table_push(&self, table: &str, ips: &[String]);
 }
 
+/// What one cycle did, for the summary line.
+#[derive(Default)]
+struct Worked {
+    /// Entries in the PF table after the cycle read it
+    size: usize,
+    expired: usize,
+    table_added: usize,
+    table_removed: usize,
+    file_added: usize,
+    file_removed: usize,
+}
+
+impl Worked {
+    /// A steady state logs nothing, so every summary line means work was done.
+    fn changed(&self) -> bool {
+        self.expired | self.table_added | self.table_removed | self.file_added | self.file_removed
+            != 0
+    }
+}
+
 /// Expire IPs whose metadata says they are past their TTL or cache expiry.
-fn scan_redis_db(ops: &dyn SyncOps, table: &str, log: &Logger) {
+fn scan_redis_db(ops: &dyn SyncOps, table: &str, log: &Logger) -> usize {
     let expired = match ops.expired_entries(table) {
         Ok(e) => e,
         Err(e) => {
@@ -41,11 +61,11 @@ fn scan_redis_db(ops: &dyn SyncOps, table: &str, log: &Logger) {
             log.error(&format!(
                 "Failed to scan Redis for {table}, retrying next scan: {e}"
             ));
-            return;
+            return 0;
         }
     };
     if expired.is_empty() {
-        return;
+        return 0;
     }
     let ips: Vec<String> = expired.iter().map(|e| e.ip.clone()).collect();
     if log.verbose {
@@ -65,11 +85,14 @@ fn scan_redis_db(ops: &dyn SyncOps, table: &str, log: &Logger) {
     }
     if let Err(e) = ops.db_pop(table, &ips) {
         log.error(&format!("Failed to delete {ips:?} from Redis: {e}"));
+        return 0;
     }
+    ips.len()
 }
 
 /// Remove orphaned IPs (no Redis key) from the PF table, add missing ones.
-fn sync_pf_table(ops: &dyn SyncOps, table: &str, log: &Logger) {
+/// Returns the table's size, then what was added and removed.
+fn sync_pf_table(ops: &dyn SyncOps, table: &str, log: &Logger) -> (usize, usize, usize) {
     // PF table before Redis, and never diff against a partial read
     let t_ips = match ops.table_show(table) {
         Ok(ips) => ips,
@@ -77,16 +100,17 @@ fn sync_pf_table(ops: &dyn SyncOps, table: &str, log: &Logger) {
             log.error(&format!(
                 "Failed to read PF table {table}, skipping this sync: {e}"
             ));
-            return;
+            return (0, 0, 0);
         }
     };
+    let size = t_ips.len();
     let db_ips = match ops.db_ips(table) {
         Ok(ips) => ips,
         Err(e) => {
             log.error(&format!(
                 "Failed to read Redis for {table}, skipping this sync: {e}"
             ));
-            return;
+            return (size, 0, 0);
         }
     };
     let t_set: BTreeSet<&str> = t_ips.iter().map(String::as_str).collect();
@@ -100,11 +124,13 @@ fn sync_pf_table(ops: &dyn SyncOps, table: &str, log: &Logger) {
     if !add.is_empty() {
         ops.table_push(table, &add);
     }
+    (size, add.len(), del.len())
 }
 
 /// Remove orphaned IPs from the persist file, add missing ones. Set-based, so
 /// file_push's duplicate appends collapse here.
-fn sync_pf_file(ops: &dyn SyncOps, table: &str, file: &Path, log: &Logger) {
+/// Returns what was added and removed.
+fn sync_pf_file(ops: &dyn SyncOps, table: &str, file: &Path, log: &Logger) -> (usize, usize) {
     // File before Redis, for the reason given on sync_pf_table
     let content = match std::fs::read_to_string(file) {
         Ok(c) => c,
@@ -113,7 +139,7 @@ fn sync_pf_file(ops: &dyn SyncOps, table: &str, file: &Path, log: &Logger) {
                 "Failed to read {}, skipping this sync: {e}",
                 file.display()
             ));
-            return;
+            return (0, 0);
         }
     };
     let db_ips = match ops.db_ips(table) {
@@ -122,7 +148,7 @@ fn sync_pf_file(ops: &dyn SyncOps, table: &str, file: &Path, log: &Logger) {
             log.error(&format!(
                 "Failed to read Redis for {table}, skipping this sync: {e}"
             ));
-            return;
+            return (0, 0);
         }
     };
     let f_set: BTreeSet<&str> = content
@@ -150,6 +176,7 @@ fn sync_pf_file(ops: &dyn SyncOps, table: &str, file: &Path, log: &Logger) {
             ));
         }
     }
+    (add.len(), del.len())
 }
 
 /// One full cycle for one address family's table and file.
@@ -157,11 +184,27 @@ pub fn run_cycle(ops: &dyn SyncOps, table: &str, file: &Path, log: &Logger) {
     if log.verbose {
         log.info(&format!("Scan for expiring {table} IPs"));
     }
-    scan_redis_db(ops, table, log);
+    let mut worked = Worked {
+        expired: scan_redis_db(ops, table, log),
+        ..Default::default()
+    };
     // Each reconciliation reads its own Redis snapshot, after the store it
     // may delete from
-    sync_pf_table(ops, table, log);
-    sync_pf_file(ops, table, file, log);
+    let (size, table_added, table_removed) = sync_pf_table(ops, table, log);
+    (worked.size, worked.table_added, worked.table_removed) = (size, table_added, table_removed);
+    (worked.file_added, worked.file_removed) = sync_pf_file(ops, table, file, log);
+
+    if worked.changed() {
+        log.info(&format!(
+            "{table}: {} addresses, {} expired, table +{}/-{}, file +{}/-{}",
+            worked.size,
+            worked.expired,
+            worked.table_added,
+            worked.table_removed,
+            worked.file_added,
+            worked.file_removed
+        ));
+    }
 }
 
 /// Run cycles every `scan_period` seconds until `term`, sleeping in one-second
@@ -409,5 +452,73 @@ mod tests {
         );
         term.store(true, Ordering::Relaxed);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn a_cycle_that_changed_nothing_logs_nothing() {
+        // INFO stays quiet in a steady state
+        let quiet = Worked {
+            size: 142,
+            ..Default::default()
+        };
+        assert!(!quiet.changed());
+        for worked in [
+            Worked {
+                expired: 1,
+                ..Default::default()
+            },
+            Worked {
+                table_added: 1,
+                ..Default::default()
+            },
+            Worked {
+                table_removed: 1,
+                ..Default::default()
+            },
+            Worked {
+                file_added: 1,
+                ..Default::default()
+            },
+            Worked {
+                file_removed: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(worked.changed());
+        }
+    }
+
+    #[test]
+    fn the_summary_counts_every_store_the_cycle_touched() {
+        let ops = FakeOps {
+            expired: vec![Expired {
+                ip: "1.1.1.1".into(),
+                qname: "one.one.one.one.".into(),
+            }],
+            db: vec!["1.0.0.1".into(), "8.8.8.8".into()],
+            table: vec!["1.0.0.1".into(), "9.9.9.9".into()],
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ipv4_domains");
+        std::fs::write(&file, "1.0.0.1\n203.0.113.9\n").unwrap();
+        run_cycle(&ops, "t4", &file, &log());
+
+        // 8.8.8.8 was missing from the table, 9.9.9.9 orphaned in it
+        assert_eq!(
+            *ops.pushed.lock().unwrap(),
+            vec![vec!["8.8.8.8".to_string()]]
+        );
+        assert_eq!(
+            *ops.popped.lock().unwrap(),
+            vec![vec!["9.9.9.9".to_string()]]
+        );
+        let published: Vec<String> = std::fs::read_to_string(&file)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert!(published.contains(&"8.8.8.8".to_string()));
+        assert!(!published.contains(&"203.0.113.9".to_string()));
     }
 }

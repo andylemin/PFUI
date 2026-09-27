@@ -29,6 +29,32 @@ add_pkg() {
   done
 }
 
+# install(1) renames into place, so a binary replaced under a running daemon
+# leaves that daemon on the old inode.
+SERVICE_WAS_RUNNING=no
+
+stop_for_upgrade() {
+  rcctl check pfui_firewall >/dev/null 2>&1 || return 0
+  SERVICE_WAS_RUNNING=yes
+  echo "PFUIFW: Stopping pfui_firewall to upgrade it"
+  rcctl stop pfui_firewall >/dev/null 2>&1 \
+    || die "cannot stop pfui_firewall; stop it by hand and re-run"
+}
+
+# Only what was running is started. A failure is loud: the firewall was
+# whitelisting a moment ago.
+start_after_upgrade() {
+  [ "${SERVICE_WAS_RUNNING}" = yes ] || return 0
+  echo "PFUIFW: Starting pfui_firewall"
+  if rcctl start pfui_firewall; then
+    return 0
+  fi
+  err=1
+  echo "PFUIFW: FAILED to start pfui_firewall, which was running before this" >&2
+  echo "        upgrade, so this firewall is not whitelisting now. Its reason:" >&2
+  echo "        tail /var/log/daemon | grep pfui_firewall" >&2
+}
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 HOUR=$(date +%d-%b-%H_%M)
 
@@ -131,6 +157,8 @@ fi
 # re-applies this on every start, because MAKEDEV resets it on release upgrades
 chgrp _pfui_firewall /dev/pf && chmod 660 /dev/pf || die "cannot set /dev/pf ownership"
 
+stop_for_upgrade
+
 echo "PFUIFW: Installing PFUI Firewall daemon"
 # The binary is the whole install: no module tree, no wire module. Overwrites
 # the Python daemon at the same path when present, deliberately, for drop-in.
@@ -199,14 +227,20 @@ if grep -q 'persist file "/var/spool/pfui' /etc/pf.conf 2>/dev/null; then
   echo "        Until then a PF reload restores whatever the old files hold."
 fi
 
+start_after_upgrade
+
 if [[ $err != 0 ]]; then
   echo "PFUIFW: All Completed, but with some errors. Please investigate."
   exit 1
 else
   echo "PFUIFW: All Completed successfully."
 fi
-echo "PFUIFW: Enable service 'rcctl enable pfui_firewall'"
-echo "PFUIFW: Start service 'rcctl start pfui_firewall'"
+if [ "${SERVICE_WAS_RUNNING}" = yes ]; then
+  echo "PFUIFW: pfui_firewall is running the version just installed"
+else
+  echo "PFUIFW: Enable service 'rcctl enable pfui_firewall'"
+  echo "PFUIFW: Start service 'rcctl start pfui_firewall'"
+fi
 echo
 echo "PFUIFW: If PFUI_Unbound runs on THIS host, uncomment SOCKET_UNIX in"
 echo "        /etc/pfui_firewall.yml and add '- SOCKET: /var/run/pfui/pfui_firewall.sock'"
