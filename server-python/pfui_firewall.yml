@@ -45,8 +45,10 @@ TTL_MULTIPLIER: 4             # Expire entries after RR TTL * TTL_MULTIPLIER (Br
                               # means do-not-cache
 
 # PF Tables & Files
-CTL: IOCTL                    # IOCTL = ioctl kernel interface (recommended, requires DEVPF), PFCTL = pfctl cli interface
+CTL: IOCTL                    # IOCTL = ioctl kernel interface (recommended, requires DEVPF), PFCTL = pfctl cli interface.
+                              # No fallback between them: the Rust daemon refuses to start if the chosen path cannot reach the tables
 DEVPF: /dev/pf                # PF ioctl interface
+PLEDGE: True                  # Rust daemon only: pledge(2) after startup. False is logged on every start
 AF4_TABLE: pfui_ipv4_domains            # IPv4 PF Table
 AF4_FILE: /var/db/pfui/ipv4_domains  # IPv4 PF Persist file - Used during PF reload
 AF6_TABLE: pfui_ipv6_domains            # IPv6 PF Table

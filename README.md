@@ -24,11 +24,10 @@ Ie, Users cannot bypass an administrator's DNS blocking attempts using 'DNS over
 | [protocol/](protocol/) | The wire protocol: specification, conformance vectors, and the Python reference implementation shared by clients and servers |
 | [client-unbound/](client-unbound/) | PFUI client as an Unbound pythonmod plugin |
 | [server-python/](server-python/) | PFUI server for OpenBSD PF, in Python |
-| [server-rust/](server-rust/) | PFUI server in Rust: a drop-in replacement for the Python daemon, validated on OpenBSD 7.9 against a live resolver and PF |
-| [server-c/](server-c/) | PFUI server in C. Framing only so far |
+| [server-rust/](server-rust/) | PFUI server for OpenBSD PF, in Rust (the recommended production version) |
 | `install-client-unbound.sh` | Installs the Unbound client on a resolver |
 | `install-server-python.sh` | Installs the Python server on a PF firewall |
-| `install-server-rust.sh` | Installs the Rust server on a PF firewall (builds with the ports rustc) |
+| `install-server-rust.sh` | Installs the Rust server on a PF firewall (builds with the packaged rustc) |
 | [examples/pf.conf](examples/pf.conf) | Example PF ruleset, applies to any server implementation |
 
 Clients and servers share only the protocol. Adding support for another resolver
@@ -296,13 +295,24 @@ https://www.geoghegan.ca/pub/pf-badhost/latest/man/man.txt
 
 ```
 pytest                                        # protocol, client and server suites
-make -C server-c test                         # the C framing against the shared vectors
+cargo test --manifest-path server-rust/Cargo.toml
 ./client-unbound/tests/container/run.sh       # builds Unbound and runs PFUI_Unbound in it
 ```
 
 The PF ioctl suites skip unless they are run on OpenBSD, and
 `client-unbound/tests/test_unbound*.py`'s live cases skip unless `PFUI_FW_HOST`
 points at a running PFUI_Firewall.
+
+```
+doas sh tests/openbsd/run.sh                  # on a scratch OpenBSD host: everything, end to end
+```
+
+That script is what CI runs inside a real OpenBSD VM
+(`.github/workflows/openbsd.yml`): both installers unattended, the daemon's
+own tests on the target, then live lookups from the resolver it installed to
+the daemon it installed over every transport and control path, checked in the
+PF table, Redis and the persist file. It rewrites `/etc/pf.conf` and both PFUI
+configurations, so never run it on a firewall that matters.
 
 The container is the one test that builds Unbound from source with
 `--with-pythonmodule` and runs the real resolver against a local authoritative
@@ -368,6 +378,7 @@ SCAN_PERIOD: 60
 TTL_MULTIPLIER: 4
 CTL: IOCTL
 DEVPF: /dev/pf
+PLEDGE: True                  # Rust daemon only
 AF4_TABLE: pfui_ipv4_domains
 AF4_FILE: /var/db/pfui/ipv4_domains
 AF6_TABLE: pfui_ipv6_domains
@@ -415,6 +426,7 @@ SCAN_PERIOD: 60
 TTL_MULTIPLIER: 4
 CTL: IOCTL
 DEVPF: /dev/pf
+PLEDGE: True                  # Rust daemon only
 AF4_TABLE: pfui_ipv4_domains
 AF4_FILE: /var/db/pfui/ipv4_domains
 AF6_TABLE: pfui_ipv6_domains
@@ -515,9 +527,19 @@ Supports IPv4 and IPv6.
 
 PFUI_Unbound - Supports anything Unbound does (Linux, BSD, etc), requires Python 3.
 
-PFUI_Firewall - Supports OpenBSD (FreeBSD still in alpha). Python is optional:
-the default Rust daemon needs none on the firewall, and the Python daemon
-requires Python 3.
+PFUI_Firewall - OpenBSD only. It drives PF through OpenBSD's table ioctls, and
+the Rust daemon also uses `unveil(2)` and `pledge(2)`. FreeBSD has its own PF
+interface and could plausibly be supported, but that work has not been done.
+Python is optional: the Rust daemon needs none on the firewall, and the Python
+daemon requires Python 3.
+
+The Rust daemon sandboxes itself once it is serving: `unveil(2)` reduces its
+filesystem to the config, the persist directory and the socket directory, and
+`pledge(2)` reduces its syscalls to what the listeners and the stores need. The
+table ioctls are not permitted under any pledge promise, so they run in a small
+child process that holds `/dev/pf` and does nothing else. `PLEDGE: False` turns
+the pledge off, for an operator who needs whitelisting back before a promise gap
+is fixed; a daemon started that way says so at error level on every start.
 
 
 ------

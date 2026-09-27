@@ -16,7 +16,6 @@
 #![cfg(target_os = "openbsd")]
 
 use std::net::IpAddr;
-use std::path::Path;
 
 use pfui_firewall::pf::ioctl::{table_add, table_del, table_get, DevPf};
 
@@ -30,8 +29,8 @@ fn table6() -> String {
     std::env::var("PFUI_TEST_TABLE6").unwrap_or_else(|_| "pfui_selftest_v6".into())
 }
 
-fn dev() -> DevPf<'static> {
-    DevPf(Path::new(DEVPF))
+fn dev() -> DevPf {
+    DevPf(std::path::PathBuf::from(DEVPF))
 }
 
 fn ips(list: &[&str]) -> Vec<IpAddr> {
@@ -171,7 +170,11 @@ fn a_table_absent_from_the_ruleset_is_a_named_error() {
         .expect_err("a missing table must fail");
     let text = err.to_string();
     assert!(
-        text.contains("not in the active ruleset"),
+        text.contains("not in the loaded ruleset"),
         "the error should name the cause: {text}"
+    );
+    assert!(
+        text.contains("CTL: PFCTL"),
+        "the error should name the remedy: {text}"
     );
 }

@@ -9,14 +9,13 @@ What every PFUI client and server must agree on.
   `client-unbound/` and `server-python/`
 
 Only code that both a client and a server need lives here. Server-only logic
-(expiry, address validation, PF ioctl) belongs to the server, and the C framing
-implementation lives with `server-c/` because nothing else uses it.
+(expiry, address validation, PF ioctl) belongs to the server.
 
 Both implementations run `vectors/framing.tsv`:
 
 ```
 python -m pytest protocol/python/tests
-make -C server-c test
+cargo test --manifest-path server-rust/Cargo.toml
 ```
 
 A change to the framing or the message object means changing PROTOCOL.md, the

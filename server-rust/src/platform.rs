@@ -1,24 +1,19 @@
-//! OpenBSD hardening. unveil(2) is unconditional. Everything here is a no-op
-//! on other platforms.
+//! OpenBSD hardening: unveil(2), then pledge(2). The plan and the promise set
+//! are data, tested on every platform; only the two system calls are OpenBSD
+//! code.
 
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::pf;
+use crate::pf::{self, Ctl};
 
-/// The runtime linker, and where it finds the shared libraries pfctl needs.
-pub const LD_SO: &str = "/usr/libexec/ld.so";
-pub const LIB_DIR: &str = "/usr/lib";
+/// Opened for the pfctl child's stdin by the spawn itself.
+pub const DEV_NULL: &str = "/dev/null";
 
-/// Every path the running daemon may see, and with what rights.
-///
-/// Built as a list rather than applied inline so it can be tested off OpenBSD,
-/// where unveil(2) does not exist. The list is the security boundary and it was
-/// incomplete without anywhere to notice; a missing entry is a runtime failure
-/// on one code path, which is the hardest kind to find by hand.
+/// Every path the running daemon may see, with its rights. Data rather than
+/// calls, so the boundary is testable off OpenBSD.
 pub fn unveil_plan(cfg: &Config, config_path: &Path) -> Vec<(PathBuf, &'static str)> {
-    let mut plan: Vec<(PathBuf, &'static str)> =
-        vec![(config_path.to_path_buf(), "r"), (cfg.devpf.clone(), "rw")];
+    let mut plan: Vec<(PathBuf, &'static str)> = vec![(config_path.to_path_buf(), "r")];
 
     // The parent, not the file: this covers the persist file, its .lock sidecar
     // and the tempfiles a rewrite renames over
@@ -36,15 +31,54 @@ pub fn unveil_plan(cfg: &Config, config_path: &Path) -> Vec<(PathBuf, &'static s
         plan.push((parent_or_root(sock), "rwc"));
     }
 
-    // pfctl, plus what exec'ing it requires. It is dynamically linked, so the
-    // loader and the libraries the loader maps have to be visible too; granting
-    // only the binary left the fallback failing at exec. CTL: IOCTL falls back
-    // to pfctl on any ioctl error, so this carries the default configuration
-    // exactly when the ioctl is what went wrong.
-    plan.push((PathBuf::from(pf::DEFAULT_PFCTL), "rx"));
-    plan.push((PathBuf::from(LD_SO), "rx"));
-    plan.push((PathBuf::from(LIB_DIR), "r"));
+    // The pfctl child inherits this view: it opens /dev/pf itself, and the
+    // spawn opens /dev/null for its stdin. /sbin/pfctl is statically linked.
+    // Under IOCTL the PF child opened /dev/pf before the lockdown.
+    if cfg.ctl == Ctl::Pfctl {
+        plan.push((cfg.devpf.clone(), "rw"));
+        plan.push((PathBuf::from(pf::DEFAULT_PFCTL), "rx"));
+        plan.push((PathBuf::from(DEV_NULL), "rw"));
+    }
     plan
+}
+
+/// The pledge(2) promise set, or None when PLEDGE is off.
+///
+/// inet is always needed: Redis connects lazily, after the pledge. dns never
+/// is: REDIS_HOST is resolved before lockdown. fattr covers the persist
+/// tempfile chmod, flock its lock. pf is never asked for: it does not permit
+/// the table-address ioctls, which is why the PF child exists.
+pub fn pledge_promises(cfg: &Config) -> Option<String> {
+    if !cfg.pledge {
+        return None;
+    }
+    let mut promises = vec!["stdio", "rpath", "wpath", "cpath", "flock", "fattr", "inet"];
+    if cfg.socket_unix.is_some() {
+        promises.push("unix");
+    }
+    if cfg.ctl == Ctl::Pfctl {
+        promises.extend(["proc", "exec"]);
+    }
+    Some(promises.join(" "))
+}
+
+/// The PF child's lockdown: no filesystem at all. It holds /dev/pf already,
+/// and cannot pledge, since every promise set forbids its ioctls.
+#[cfg(target_os = "openbsd")]
+pub fn child_lockdown() -> Result<(), String> {
+    unveil(Path::new("/var/empty"), "")?;
+    unveil_lock()
+}
+
+#[cfg(not(target_os = "openbsd"))]
+pub fn child_lockdown() -> Result<(), String> {
+    Ok(())
+}
+
+/// What lockdown applied, for the startup log.
+pub struct Sandbox {
+    pub unveiled: usize,
+    pub promises: Option<String>,
 }
 
 #[cfg(target_os = "openbsd")]
@@ -74,21 +108,45 @@ fn unveil_lock() -> Result<(), String> {
     Ok(())
 }
 
-/// Restrict the filesystem to what the running daemon needs. Called after the
-/// binds, which need getgrnam and the socket node, and after REDIS_HOST is
-/// resolved, so no resolver files have to be unveiled. Children inherit the
-/// view, which is what lets the pfctl fallback reach /dev/pf.
+/// execpromises is NULL: a pfctl child runs unpledged.
 #[cfg(target_os = "openbsd")]
-pub fn lockdown(cfg: &Config, config_path: &Path) -> Result<(), String> {
-    for (path, permissions) in unveil_plan(cfg, config_path) {
-        unveil(&path, permissions)?;
+fn pledge(promises: &str) -> Result<(), String> {
+    let c_promises = std::ffi::CString::new(promises).expect("static promises");
+    if unsafe { libc::pledge(c_promises.as_ptr(), std::ptr::null()) } == -1 {
+        return Err(format!(
+            "pledge({promises}) failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-    unveil_lock()
+    Ok(())
 }
 
+/// Unveil the plan, lock it, pledge. After the binds (getgrnam, the socket
+/// node) and REDIS_HOST resolution; before the PF probe.
+#[cfg(target_os = "openbsd")]
+pub fn lockdown(cfg: &Config, config_path: &Path) -> Result<Sandbox, String> {
+    let plan = unveil_plan(cfg, config_path);
+    for (path, permissions) in &plan {
+        unveil(path, permissions)?;
+    }
+    unveil_lock()?;
+    let promises = pledge_promises(cfg);
+    if let Some(p) = &promises {
+        pledge(p)?;
+    }
+    Ok(Sandbox {
+        unveiled: plan.len(),
+        promises,
+    })
+}
+
+/// Nothing is applied off OpenBSD.
 #[cfg(not(target_os = "openbsd"))]
-pub fn lockdown(_cfg: &Config, _config_path: &Path) -> Result<(), String> {
-    Ok(())
+pub fn lockdown(_cfg: &Config, _config_path: &Path) -> Result<Sandbox, String> {
+    Ok(Sandbox {
+        unveiled: 0,
+        promises: None,
+    })
 }
 
 #[cfg(test)]
@@ -96,8 +154,8 @@ mod tests {
     use super::*;
     use crate::config::load_config_str;
 
-    fn plan_for(extra: &str) -> Vec<(PathBuf, &'static str)> {
-        let cfg = load_config_str(&format!(
+    fn config(extra: &str) -> Config {
+        load_config_str(&format!(
             "
 AF4_TABLE: t4
 AF4_FILE: /var/db/pfui/ipv4_domains
@@ -106,8 +164,11 @@ AF6_FILE: /var/db/pfui/ipv6_domains
 SOCKET_LISTEN: 10.10.1.254
 {extra}"
         ))
-        .unwrap();
-        unveil_plan(&cfg, Path::new("/etc/pfui_firewall.yml"))
+        .unwrap()
+    }
+
+    fn plan_for(extra: &str) -> Vec<(PathBuf, &'static str)> {
+        unveil_plan(&config(extra), Path::new("/etc/pfui_firewall.yml"))
     }
 
     fn rights(plan: &[(PathBuf, &'static str)], path: &str) -> Option<&'static str> {
@@ -117,29 +178,32 @@ SOCKET_LISTEN: 10.10.1.254
     }
 
     #[test]
-    fn the_pfctl_fallback_can_actually_exec() {
-        // Granting the binary alone was not enough: pfctl is dynamically linked,
-        // so exec failed at the loader, and CTL: IOCTL falls back to pfctl on
-        // any ioctl error
-        let plan = plan_for("");
+    fn pfctl_mode_can_actually_exec_pfctl() {
+        let plan = plan_for("CTL: PFCTL\n");
         assert_eq!(rights(&plan, pf::DEFAULT_PFCTL), Some("rx"));
+        // The spawn opens /dev/null for the child's stdin before exec
         assert_eq!(
-            rights(&plan, LD_SO),
-            Some("rx"),
-            "the loader is not visible"
+            rights(&plan, DEV_NULL),
+            Some("rw"),
+            "stdin cannot be opened"
         );
-        assert_eq!(
-            rights(&plan, LIB_DIR),
-            Some("r"),
-            "the shared libraries are not visible"
-        );
+        // The pfctl child opens /dev/pf
+        assert_eq!(rights(&plan, "/dev/pf"), Some("rw"));
+    }
+
+    #[test]
+    fn ioctl_mode_sees_neither_pfctl_nor_the_device() {
+        // Nothing to exec, and the PF child holds /dev/pf
+        let plan = plan_for("CTL: IOCTL\n");
+        assert_eq!(rights(&plan, pf::DEFAULT_PFCTL), None);
+        assert_eq!(rights(&plan, DEV_NULL), None);
+        assert_eq!(rights(&plan, "/dev/pf"), None);
     }
 
     #[test]
     fn the_plan_covers_what_serving_needs() {
         let plan = plan_for("SOCKET_UNIX: /var/run/pfui/pfui_firewall.sock\n");
         assert_eq!(rights(&plan, "/etc/pfui_firewall.yml"), Some("r"));
-        assert_eq!(rights(&plan, "/dev/pf"), Some("rw"));
         // Directories, so the .lock sidecar and rewrite tempfiles are covered
         assert_eq!(rights(&plan, "/var/db/pfui"), Some("rwc"));
         assert_eq!(rights(&plan, "/var/run/pfui"), Some("rwc"));
@@ -147,7 +211,42 @@ SOCKET_LISTEN: 10.10.1.254
 
     #[test]
     fn no_socket_directory_is_granted_when_there_is_no_socket() {
-        let plan = plan_for("");
-        assert_eq!(rights(&plan, "/var/run/pfui"), None);
+        assert_eq!(rights(&plan_for(""), "/var/run/pfui"), None);
+    }
+
+    #[test]
+    fn promises_follow_ctl() {
+        let ioctl = pledge_promises(&config("CTL: IOCTL\n")).unwrap();
+        let pfctl = pledge_promises(&config("CTL: PFCTL\n")).unwrap();
+        for base in ["stdio", "rpath", "wpath", "cpath", "flock", "fattr", "inet"] {
+            assert!(ioctl.split(' ').any(|p| p == base), "IOCTL lacks {base}");
+            assert!(pfctl.split(' ').any(|p| p == base), "PFCTL lacks {base}");
+        }
+        // pf is never pledged: it does not cover the address ioctls, and
+        // IOCTL never forks once the PF child exists
+        assert!(!ioctl.split(' ').any(|p| p == "pf"), "{ioctl}");
+        assert!(
+            !ioctl.contains("proc") && !ioctl.contains("exec"),
+            "{ioctl}"
+        );
+        // PFCTL forks and execs pfctl
+        assert!(pfctl.split(' ').any(|p| p == "proc"));
+        assert!(pfctl.split(' ').any(|p| p == "exec"));
+        assert!(!pfctl.split(' ').any(|p| p == "pf"), "{pfctl}");
+        // dns is never pledged: REDIS_HOST is resolved before lockdown
+        assert!(!ioctl.contains("dns") && !pfctl.contains("dns"));
+    }
+
+    #[test]
+    fn unix_is_pledged_only_when_a_local_socket_is_bound() {
+        let without = pledge_promises(&config("")).unwrap();
+        let with = pledge_promises(&config("SOCKET_UNIX: /var/run/pfui/s.sock\n")).unwrap();
+        assert!(!without.split(' ').any(|p| p == "unix"), "{without}");
+        assert!(with.split(' ').any(|p| p == "unix"), "{with}");
+    }
+
+    #[test]
+    fn the_emergency_switch_disables_the_pledge() {
+        assert!(pledge_promises(&config("PLEDGE: False\n")).is_none());
     }
 }

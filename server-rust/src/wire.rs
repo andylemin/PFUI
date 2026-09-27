@@ -25,10 +25,8 @@ pub enum WireError {
     DecompressCorrupt(String),
     /// Payload is not valid JSON -> "Failed to decode"
     Json(String),
-    /// The payload's shape contradicts COMPRESS -> "Failed to decode".
-    /// Compression is configuration on both ends and is not signalled on the
-    /// wire, so a mismatch can only surface as a decode failure. The lz4 frame
-    /// magic says which end is wrong, which is worth saying outright.
+    /// The payload's shape contradicts COMPRESS: replied as "Failed to decode",
+    /// logged with which end is wrong.
     CompressMismatch { compress_configured: bool },
 }
 

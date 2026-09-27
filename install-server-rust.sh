@@ -7,7 +7,7 @@
 # mutually exclusive on one firewall.
 
 err=0
-trap 'err=1' ERR
+trap 'err=1; echo "$(basename "$0"): failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Abort immediately on a step nothing can proceed without
 die() {
@@ -47,7 +47,7 @@ if [[ $(uname) != "OpenBSD" ]]; then
   exit 2
 fi
 
-# Build here with the ports rustc (which is the MSRV pin), or install a
+# Build here with the packaged rustc (which is the MSRV pin), or install a
 # prebuilt artifact from the release builder: PFUI_BINARY=/path skips the
 # toolchain and the build entirely.
 if [[ -n "${PFUI_BINARY}" ]]; then

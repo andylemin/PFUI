@@ -252,16 +252,26 @@ fn a_message_over_the_local_socket_is_acknowledged() {
     conn.read_to_string(&mut reply).unwrap();
     assert_eq!(reply, "Empty payload");
 
-    // A peer that leaves before the ack (the EPIPE case) breaks nothing
+    // A peer that leaves before the ack (the EPIPE case) breaks nothing. It
+    // leaves once the table is updated, which precedes the ack: a peer gone
+    // before accept is a different case, and Darwin refuses setsockopt on it
     {
         let mut conn = UnixStream::connect(&sock).unwrap();
         conn.write_all(&frame).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while recorder.tables.lock().unwrap().len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "tables not updated");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while recorder.tables.lock().unwrap().len() < 2 {
-        assert!(std::time::Instant::now() < deadline, "tables not updated");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // and the daemon is still serving
+    let mut conn = UnixStream::connect(&sock).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(&frame).unwrap();
+    conn.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reply = String::new();
+    conn.read_to_string(&mut reply).unwrap();
+    assert_eq!(reply, "ACKUPDATE");
 
     term.store(true, Ordering::Relaxed);
     accept.join().unwrap();

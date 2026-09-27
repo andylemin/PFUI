@@ -70,14 +70,9 @@ pub trait Backends: Send + Sync {
 }
 
 pub trait Stream: Read + Write + Send {
-    /// Send FIN on the write half, leaving the read half open.
-    ///
-    /// An acknowledgement is not length-prefixed, so a client cannot know it has
-    /// the whole reply until the connection closes. Half-closing as soon as the
-    /// ACK is flushed is what releases the resolver at the table update rather
-    /// than at the end of the message, which is the point of the PF, ACKUPDATE,
-    /// Redis, persist order. Failure is ignored: a client that has already gone
-    /// is routine, and the addresses are installed either way.
+    /// Send FIN on the write half, leaving the read half open. A reply is
+    /// unframed, so the peer reads to EOF; half-closing at the ACK releases it
+    /// before Redis and the persist write. Failure is ignored.
     fn shutdown_write(&mut self);
 }
 
@@ -313,10 +308,7 @@ fn handle_stream(_kind: StreamKind, conn: &mut dyn Stream, peer: &str, ctx: &Ctx
         } => {
             act(ctx, kind, &qname, &af4, &af6, || {
                 reply(conn, ACK_UPDATE);
-                // Released here, before Redis and the persist file: PF already
-                // passes the traffic, so the resolver has nothing left to wait
-                // for. Holding the socket open until this function returned made
-                // it wait for both, since it reads the reply until EOF.
+                // Half-close now: the peer reads to EOF, and PF already passes
                 conn.shutdown_write();
                 if let Some(t0) = started {
                     ctx.log.info(&format!(
@@ -380,10 +372,7 @@ fn handle_datagram(data: &[u8], source: SocketAddr, ctx: &Ctx) {
 mod tests {
     use super::*;
 
-    /// Both stream transports must release the reader, not just TCP: a reply is
-    /// unframed, so the peer's read ends only at EOF, and handle_stream is shared
-    /// by both. A no-op impl here would leave a resolver on the local socket
-    /// waiting for Redis and the persist write.
+    /// Both stream transports: handle_stream is shared and the peer reads to EOF.
     #[test]
     fn shutdown_write_ends_the_readers_reply() {
         use std::os::unix::net::UnixStream;

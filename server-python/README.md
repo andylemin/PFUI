@@ -18,5 +18,5 @@ format is specified in [../protocol/PROTOCOL.md](../protocol/PROTOCOL.md); the
 installer places `pfui_wire.py` beside the daemon, and the `pfui` package holds
 only what is server-specific.
 
-`../server-c/` is a second implementation of the same protocol, currently
+`../server-rust/` is a second implementation of the same protocol, currently
 framing only. Where the two disagree, the protocol spec is normative.

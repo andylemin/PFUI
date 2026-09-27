@@ -2,7 +2,7 @@
 
 Normative description of what a PFUI client sends to a PFUI server. Any client
 (`client-unbound/`, or a future client for another resolver) and any server
-(`server-python/`, `server-c/`) must agree with this document, and both are
+(`server-python/`, `server-rust/`) must agree with this document, and both are
 tested against the shared vectors in `vectors/`.
 
 Version: 2 (`qname` moved from each record to the message). There is no version

@@ -104,14 +104,9 @@ pub fn pfr_addr_of(ip: &IpAddr) -> PfrAddr {
 }
 
 /// The address back out of a kernel-filled entry, canonicalised so table reads
-/// agree with Redis keys.
-///
-/// None for anything that is not a plain host entry. A table may also hold
-/// networks and negations, from pf.conf or an operator's own pfctl, and those
-/// were reported as the bare address they start with: the sync loop then saw an
-/// address with no Redis key, called it orphaned, and issued a host delete every
-/// scan that could not match the entry it came from. PFUI only ever adds
-/// host-width, non-negated addresses, so nothing it manages is hidden by this.
+/// agree with Redis keys. None for anything but a plain host entry: PFUI adds
+/// host-width, non-negated addresses only, and the sync loop withdraws what it
+/// cannot match.
 pub fn ip_of(a: &PfrAddr) -> Option<IpAddr> {
     if a.pfra_not != 0 {
         return None;
@@ -195,9 +190,7 @@ mod tests {
 
     #[test]
     fn a_network_or_negated_entry_is_not_read_as_a_host() {
-        // sync_pf_table deletes any table address with no Redis key. Reporting
-        // 10.0.0.0/8 as 10.0.0.0, or !192.0.2.1 as 192.0.2.1, made the daemon
-        // try to withdraw entries it never added and could not match.
+        // A network or negation read as a host draws a delete that never matches
         let mut network = pfr_addr_of(&"10.0.0.0".parse::<IpAddr>().unwrap());
         network.pfra_net = 8;
         assert_eq!(ip_of(&network), None, "a /8 was read as a host");

@@ -1,6 +1,6 @@
 """Conformance tests against the shared vectors in ../../vectors/.
 
-The same framing.tsv is read by server-c's test suite, so a divergence between
+The same framing.tsv is read by server-rust's test suite, so a divergence between
 the two implementations fails here or there rather than in production.
 """
 
@@ -11,7 +11,7 @@ import pytest
 
 from pfui_wire import BadLength, MAX_MESSAGE, Truncated, WireError, decode_stream, encode
 
-# The vectors' `expect` column names the rejection, and server-c reports the
+# The vectors' `expect` column names the rejection, and server-rust reports the
 # same distinction as PFUI_BAD_LENGTH / PFUI_TRUNCATED. Asserting the class,
 # rather than only WireError, is what keeps the two implementations honest about
 # which refusal a receiver sends.

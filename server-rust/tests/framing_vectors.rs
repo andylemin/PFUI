@@ -1,5 +1,5 @@
 //! Framing conformance against ../protocol/vectors/framing.tsv — the same
-//! rows server-c and protocol/python run, so the implementations cannot
+//! rows protocol/python runs, so the implementations cannot
 //! drift apart unnoticed. This layer is about bytes, not JSON: several ok
 //! payloads are deliberately not valid JSON.
 

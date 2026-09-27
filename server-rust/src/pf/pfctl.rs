@@ -1,6 +1,5 @@
-//! pfctl(8) subprocess path: the whole story under CTL: PFCTL, and the error
-//! fallback under CTL: IOCTL. The binary is passed in by absolute path so
-//! tests can point at a stub.
+//! pfctl(8) subprocess path (CTL: PFCTL). The binary is passed by absolute path
+//! so tests can point at a stub.
 
 use std::path::Path;
 use std::process::Command;

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::logger::Logger;
-use crate::pf::{self, PfConfig};
+use crate::pf::{self, PfConfig, SharedDev};
 use crate::receiver::Backends;
 use crate::store::{self, Kind, RedisDb};
 
@@ -18,6 +18,7 @@ pub struct RealBackends {
     cfg: Arc<Config>,
     log: Arc<Logger>,
     client: redis::Client,
+    pf_dev: SharedDev,
 }
 
 thread_local! {
@@ -30,7 +31,7 @@ impl RealBackends {
     /// REDIS_HOST is resolved once here, before any unveil or pledge lockdown.
     /// The client connects lazily, so a firewall booting before Redis still
     /// starts and whitelists.
-    pub fn new(cfg: Arc<Config>, log: Arc<Logger>) -> Result<Self, String> {
+    pub fn new(cfg: Arc<Config>, log: Arc<Logger>, pf_dev: SharedDev) -> Result<Self, String> {
         use std::net::ToSocketAddrs;
         let addr = (cfg.redis_host.as_str(), cfg.redis_port)
             .to_socket_addrs()
@@ -39,13 +40,26 @@ impl RealBackends {
             .ok_or_else(|| format!("REDIS_HOST {} resolved to nothing", cfg.redis_host))?;
         let url = format!("redis://{}:{}/{}", addr.ip(), addr.port(), cfg.redis_db);
         let client = redis::Client::open(url).map_err(|e| e.to_string())?;
-        Ok(RealBackends { cfg, log, client })
+        Ok(RealBackends {
+            cfg,
+            log,
+            client,
+            pf_dev,
+        })
+    }
+
+    /// Read each configured table through the control path, before serving.
+    pub fn probe_pf(&self) -> Result<(), String> {
+        pf::probe(
+            &self.pf_config(),
+            &[self.cfg.af4_table.as_str(), self.cfg.af6_table.as_str()],
+        )
     }
 
     fn pf_config(&self) -> PfConfig<'_> {
         PfConfig {
             ctl: self.cfg.ctl,
-            devpf: &self.cfg.devpf,
+            dev: &self.pf_dev,
             pfctl: Path::new(pf::DEFAULT_PFCTL),
         }
     }
@@ -80,18 +94,11 @@ impl RealBackends {
 
 impl Backends for RealBackends {
     fn table_push(&self, table: &str, ips: &[IpAddr]) {
-        match pf::table_push(&self.pf_config(), table, ips) {
-            Ok(outcome) => {
-                if let Some(ioctl_err) = outcome.ioctl_error {
-                    self.log.error(&format!(
-                        "IOCTL failed installing into PF table {table} ({ioctl_err}); \
-                         pfctl served the call"
-                    ));
-                }
-            }
-            Err(e) => self.log.error(&format!(
+        // The ACK still follows; PF keeps denying, so a failed push is loud, not unsafe
+        if let Err(e) = pf::table_push(&self.pf_config(), table, ips) {
+            self.log.error(&format!(
                 "Failed to install {ips:?} into PF table {table}: {e}"
-            )),
+            ));
         }
     }
 
@@ -146,18 +153,7 @@ impl crate::sync::SyncOps for RealBackends {
     }
 
     fn table_show(&self, table: &str) -> Result<Vec<String>, String> {
-        match pf::table_show(&self.pf_config(), table) {
-            Ok(outcome) => {
-                if let Some(ioctl_err) = outcome.ioctl_error {
-                    self.log.error(&format!(
-                        "IOCTL failed reading PF table {table} ({ioctl_err}); \
-                         pfctl served the call"
-                    ));
-                }
-                Ok(outcome.value)
-            }
-            Err(e) => Err(e.to_string()),
-        }
+        pf::table_show(&self.pf_config(), table).map_err(|e| e.to_string())
     }
 
     fn table_pop(&self, table: &str, entries: &[String]) {
@@ -172,18 +168,10 @@ impl crate::sync::SyncOps for RealBackends {
         if ips.is_empty() {
             return;
         }
-        match pf::table_pop(&self.pf_config(), table, &ips) {
-            Ok(outcome) => {
-                if let Some(ioctl_err) = outcome.ioctl_error {
-                    self.log.error(&format!(
-                        "IOCTL failed clearing PF table {table} ({ioctl_err}); \
-                         pfctl served the call"
-                    ));
-                }
-            }
-            Err(e) => self.log.error(&format!(
+        if let Err(e) = pf::table_pop(&self.pf_config(), table, &ips) {
+            self.log.error(&format!(
                 "Failed to clear {ips:?} from PF table {table}: {e}"
-            )),
+            ));
         }
     }
 
