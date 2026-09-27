@@ -69,28 +69,18 @@ pub trait Db {
     ) -> Result<Vec<Option<HashMap<String, String>>>, DbError>;
 }
 
-/// Longest an entry may authorise egress for, whatever the sender asked.
-///
-/// A TTL arrives from a DNS answer over an unauthenticated transport, so it is
-/// attacker-influenced in two ways: an authoritative server chooses it, and
-/// anything permitted to reach the listener can send one. Unbounded, a single
-/// large value pins its address in the PF table for the life of the daemon,
-/// because both the Redis backstop and the scan loop derive their windows from
-/// it. Seven days is far above any legitimate TTL times TTL_MULTIPLIER and far
-/// below forever.
+/// Ceiling on how long an entry may authorise egress. The TTL is sender-supplied
+/// over an unauthenticated transport; without a ceiling one value pins an
+/// address for the daemon's lifetime.
 pub const MAX_ENTRY_LIFETIME: i64 = 7 * 24 * 3600;
 
-/// How long an rr record may live, bounded. Used by the Redis backstop and by
-/// the scan loop, which have to agree or an entry lingers in whichever store
-/// reads it as fresher.
+/// Bounded rr lifetime; the Redis backstop and the scan loop must agree.
 fn rr_window(ttl: i64, multiplier: u32) -> i64 {
     ttl.saturating_mul(multiplier as i64)
         .clamp(0, MAX_ENTRY_LIFETIME)
 }
 
-/// When a cache record's absolute expiry falls, bounded relative to when it was
-/// recorded. A sender-supplied expiry far in the future is capped, and one
-/// already in the past stays in the past.
+/// Bounded cache expiry, relative to when the record was made.
 fn cache_deadline(expires: i64, epoch: i64) -> i64 {
     expires.min(epoch.saturating_add(MAX_ENTRY_LIFETIME))
 }
@@ -137,8 +127,7 @@ pub fn db_push(
                 });
                 cmds.push(DbCmd::Expire {
                     seconds: key_lifetime(
-                        // Saturating: a sender-supplied expiry near i64::MIN
-                        // overflowed this subtraction
+                        // Saturating: expires is sender-supplied
                         cache_deadline(*rr_ttl, now).saturating_sub(now).max(0),
                         scan_period,
                     ),
@@ -693,8 +682,7 @@ mod tests {
 
     #[test]
     fn a_huge_ttl_cannot_pin_an_address_forever() {
-        // A TTL arrives from a DNS answer over an unauthenticated transport, so
-        // it decides how long egress is authorised and cannot be unbounded
+        // Sender-supplied, so it cannot be unbounded
         let meta = meta(&[
             ("kind", "rr"),
             ("ttl", &i64::MAX.to_string()),
@@ -726,8 +714,7 @@ mod tests {
 
     #[test]
     fn the_redis_backstop_is_bounded_too() {
-        // The backstop and the scan loop must agree, or an entry lingers in
-        // whichever store reads it as fresher
+        // Backstop and scan loop must agree
         let mut db = FakeDb::default();
         push_one(&mut db, i64::MAX, Kind::Rr, 60, 4);
         let expires: Vec<i64> = db
@@ -743,8 +730,7 @@ mod tests {
 
     #[test]
     fn a_negative_cache_expiry_does_not_overflow() {
-        // rr_ttl - now panicked in debug and wrapped to a near-eternal lifetime
-        // in release for an expiry near i64::MIN
+        // An expiry near i64::MIN must not overflow the subtraction
         let mut db = FakeDb::default();
         push_one(&mut db, i64::MIN, Kind::Cache, 60, 4);
         for cmd in &db.cmds {

@@ -4,7 +4,6 @@
 //! be tested on any platform; only the raw ioctl on /dev/pf is OpenBSD code.
 
 use std::net::IpAddr;
-use std::path::Path;
 
 use super::structs::{
     ip_of, pfr_addr_of, PfiocTable, PfrAddr, PfrTable, DIOCRADDADDRS, DIOCRDELADDRS, DIOCRGETADDRS,
@@ -18,23 +17,20 @@ pub trait PfDev {
 }
 
 fn io_for(table: &str, size: usize) -> Result<PfiocTable, PfError> {
-    let table = PfrTable::named(table).ok_or(PfError::TableName)?;
-    Ok(PfiocTable {
-        pfrio_table: table,
-        pfrio_buffer: std::ptr::null_mut(),
-        pfrio_esize: std::mem::size_of::<PfrAddr>() as i32,
-        pfrio_size: size as i32,
-        pfrio_size2: 0,
-        pfrio_nadd: 0,
-        pfrio_ndel: 0,
-        pfrio_nchange: 0,
-        pfrio_flags: 0,
-        pfrio_ticket: 0,
-    })
+    // Zeroed first so the padding is defined: the PF child sends this as bytes
+    let mut io: PfiocTable = unsafe { std::mem::zeroed() };
+    io.pfrio_table = PfrTable::named(table).ok_or(PfError::TableName)?;
+    io.pfrio_esize = std::mem::size_of::<PfrAddr>() as i32;
+    io.pfrio_size = size as i32;
+    Ok(io)
 }
 
 /// Install addresses; returns the kernel's count of effective additions.
-pub fn table_add(dev: &mut impl PfDev, table: &str, ips: &[IpAddr]) -> Result<usize, PfError> {
+pub fn table_add(
+    dev: &mut (impl PfDev + ?Sized),
+    table: &str,
+    ips: &[IpAddr],
+) -> Result<usize, PfError> {
     let mut buf: Vec<PfrAddr> = ips.iter().map(pfr_addr_of).collect();
     let mut io = io_for(table, buf.len())?;
     dev.call(DIOCRADDADDRS, &mut io, &mut buf)?;
@@ -43,7 +39,11 @@ pub fn table_add(dev: &mut impl PfDev, table: &str, ips: &[IpAddr]) -> Result<us
 
 /// Remove addresses; returns the kernel's count of effective deletions. nadd
 /// and ndel are separate fields, and only ndel counts deletions.
-pub fn table_del(dev: &mut impl PfDev, table: &str, ips: &[IpAddr]) -> Result<usize, PfError> {
+pub fn table_del(
+    dev: &mut (impl PfDev + ?Sized),
+    table: &str,
+    ips: &[IpAddr],
+) -> Result<usize, PfError> {
     let mut buf: Vec<PfrAddr> = ips.iter().map(pfr_addr_of).collect();
     let mut io = io_for(table, buf.len())?;
     dev.call(DIOCRDELADDRS, &mut io, &mut buf)?;
@@ -55,7 +55,7 @@ pub fn table_del(dev: &mut impl PfDev, table: &str, ips: &[IpAddr]) -> Result<us
 /// Two-call protocol: size 0 asks the kernel for the count, the second call
 /// fills a buffer of that size. A table that grew between the calls is
 /// retried, bounded so a hot table cannot livelock the scan.
-pub fn table_get(dev: &mut impl PfDev, table: &str) -> Result<Vec<IpAddr>, PfError> {
+pub fn table_get(dev: &mut (impl PfDev + ?Sized), table: &str) -> Result<Vec<IpAddr>, PfError> {
     let mut io = io_for(table, 0)?;
     let mut empty: [PfrAddr; 0] = [];
     dev.call(DIOCRGETADDRS, &mut io, &mut empty)?;
@@ -77,37 +77,73 @@ pub fn table_get(dev: &mut impl PfDev, table: &str) -> Result<Vec<IpAddr>, PfErr
     Err(PfError::Unstable)
 }
 
-/// The real /dev/pf, opened per call; it is not a contended resource at these
-/// rates.
-pub struct DevPf<'a>(pub &'a Path);
+/// The real /dev/pf, opened per call.
+pub struct DevPf(pub std::path::PathBuf);
+
+/// The real /dev/pf through a descriptor opened once: the PF child cannot open
+/// anything after its lockdown.
+pub struct OpenedPf(pub std::fs::File);
 
 #[cfg(target_os = "openbsd")]
-impl PfDev for DevPf<'_> {
+fn raw_call(
+    fd: std::os::fd::RawFd,
+    cmd: u64,
+    io: &mut PfiocTable,
+    buf: &mut [PfrAddr],
+) -> Result<(), PfError> {
+    if !buf.is_empty() {
+        io.pfrio_buffer = buf.as_mut_ptr() as *mut std::ffi::c_void;
+    }
+    let rc = unsafe { libc::ioctl(fd, cmd as libc::c_ulong, io as *mut _) };
+    if rc == -1 {
+        let err = std::io::Error::last_os_error();
+        return Err(PfError::Ioctl {
+            cmd,
+            errno: err.to_string(),
+            raw: err.raw_os_error(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "openbsd")]
+impl PfDev for DevPf {
     fn call(&mut self, cmd: u64, io: &mut PfiocTable, buf: &mut [PfrAddr]) -> Result<(), PfError> {
         use std::os::fd::AsRawFd;
         let dev = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(self.0)
-            .map_err(|e| PfError::Dev(e.to_string()))?;
-        if !buf.is_empty() {
-            io.pfrio_buffer = buf.as_mut_ptr() as *mut std::ffi::c_void;
-        }
-        let rc = unsafe { libc::ioctl(dev.as_raw_fd(), cmd as libc::c_ulong, io as *mut _) };
-        if rc == -1 {
-            let err = std::io::Error::last_os_error();
-            return Err(PfError::Ioctl {
-                cmd,
-                errno: err.to_string(),
-                raw: err.raw_os_error(),
-            });
-        }
-        Ok(())
+            .open(&self.0)
+            .map_err(|e| PfError::Dev {
+                errno: e.to_string(),
+                raw: e.raw_os_error(),
+            })?;
+        raw_call(dev.as_raw_fd(), cmd, io, buf)
+    }
+}
+
+#[cfg(target_os = "openbsd")]
+impl PfDev for OpenedPf {
+    fn call(&mut self, cmd: u64, io: &mut PfiocTable, buf: &mut [PfrAddr]) -> Result<(), PfError> {
+        use std::os::fd::AsRawFd;
+        raw_call(self.0.as_raw_fd(), cmd, io, buf)
     }
 }
 
 #[cfg(not(target_os = "openbsd"))]
-impl PfDev for DevPf<'_> {
+impl PfDev for DevPf {
+    fn call(
+        &mut self,
+        _cmd: u64,
+        _io: &mut PfiocTable,
+        _buf: &mut [PfrAddr],
+    ) -> Result<(), PfError> {
+        Err(PfError::Unsupported)
+    }
+}
+
+#[cfg(not(target_os = "openbsd"))]
+impl PfDev for OpenedPf {
     fn call(
         &mut self,
         _cmd: u64,

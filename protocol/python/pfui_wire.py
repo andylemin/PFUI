@@ -15,10 +15,7 @@ from struct import Struct
 try:
     import lz4.frame
 except ImportError:
-    # Only a compressed payload needs it, and COMPRESS: False is how an operator
-    # says there will not be one. Importing it unconditionally made the package
-    # mandatory even then, so a resolver with compression off still could not
-    # load this module.
+    # Needed only when COMPRESS is on
     lz4 = None
 
 HAVE_LZ4 = lz4 is not None
@@ -45,11 +42,7 @@ class Truncated(WireError):
 
 
 def _codec():
-    """lz4.frame, or a WireError naming what to install.
-
-    Raised rather than returned so a caller that asked for compression cannot
-    silently send plain JSON, which the far end would refuse as a mismatch.
-    """
+    """lz4.frame, or a WireError naming what to install; never plain JSON."""
     if not HAVE_LZ4:
         raise WireError(
             "COMPRESS is on but the lz4 package is not installed; install "

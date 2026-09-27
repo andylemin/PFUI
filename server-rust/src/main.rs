@@ -1,15 +1,16 @@
 //! PFUI_Firewall daemon. Runs in the foreground; rc.d owns backgrounding via
 //! rc_bg. Exit codes: 2 config, 3 Redis client, 4 sync thread, 5 UDP gate,
-//! 6 bind.
+//! 6 bind or sandbox, 7 PF control path unusable.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use pfui_firewall::backends::RealBackends;
 use pfui_firewall::config::{self, Proto};
 use pfui_firewall::listener::{self, StreamListener, WorkerPool};
 use pfui_firewall::logger::Logger;
+use pfui_firewall::pf::{self, Ctl};
 use pfui_firewall::receiver::Ctx;
 
 const CONFIG_LOCATION: &str = "/etc/pfui_firewall.yml";
@@ -75,9 +76,22 @@ fn run() -> i32 {
         Logger::syslog(cfg.log_level, cfg.logging)
     });
 
+    // Under IOCTL the table ioctls run in a child forked now, before any
+    // thread exists and before the pledge, which permits none of them
+    let pf_dev: pf::SharedDev = match cfg.ctl {
+        Ctl::Ioctl => match pf::privsep::spawn(&cfg.devpf) {
+            Ok(child) => std::sync::Mutex::new(Box::new(child)),
+            Err(e) => {
+                log.error(&format!("cannot start the PF child: {e}"));
+                return 7;
+            }
+        },
+        Ctl::Pfctl => std::sync::Mutex::new(Box::new(pf::ioctl::DevPf(cfg.devpf.clone()))),
+    };
+
     // Resolves REDIS_HOST once and never probes the server: a firewall
     // booting before Redis must still start and whitelist
-    let backends = match RealBackends::new(Arc::clone(&cfg), Arc::clone(&log)) {
+    let backends = match RealBackends::new(Arc::clone(&cfg), Arc::clone(&log), pf_dev) {
         Ok(b) => Arc::new(b),
         Err(e) => {
             log.error(&format!("Failed to set up Redis client: {e}"));
@@ -123,6 +137,13 @@ fn run() -> i32 {
         }
         None => None,
     };
+    // Every failure from here on has a socket node to remove
+    let abort = |code: i32| -> i32 {
+        if let Some(path) = &cfg.socket_unix {
+            listener::remove_unix_socket(path);
+        }
+        code
+    };
 
     enum Network {
         Tcp(std::net::TcpListener),
@@ -144,10 +165,7 @@ fn run() -> i32 {
                         "Failed to bind TCP {listen}:{}: {e}",
                         cfg.socket_port
                     ));
-                    if let Some((_, path)) = &unix {
-                        listener::remove_unix_socket(path);
-                    }
-                    return 6;
+                    return abort(6);
                 }
             }
         }
@@ -166,10 +184,7 @@ fn run() -> i32 {
                         "Failed to bind UDP {listen}:{}: {e}",
                         cfg.socket_port
                     ));
-                    if let Some((_, path)) = &unix {
-                        listener::remove_unix_socket(path);
-                    }
-                    return 6;
+                    return abort(6);
                 }
             }
         }
@@ -177,21 +192,42 @@ fn run() -> i32 {
     };
 
     // Binds, group lookup and host resolution are done; the filesystem view
-    // now narrows to what serving needs
-    if let Err(e) = pfui_firewall::platform::lockdown(&cfg, &opts.config) {
-        log.error(&format!("Cannot apply unveil: {e}; refusing to serve"));
-        if let Some(path) = &cfg.socket_unix {
-            listener::remove_unix_socket(path);
+    // narrows to what serving needs, then the process is pledged
+    match pfui_firewall::platform::lockdown(&cfg, &opts.config) {
+        Ok(sandbox) => match &sandbox.promises {
+            Some(promises) => log.info(&format!(
+                "[+] Sandboxed: {} paths unveiled, pledged \"{promises}\"",
+                sandbox.unveiled
+            )),
+            None if cfg.pledge => log.info(&format!("[+] {} paths unveiled", sandbox.unveiled)),
+            // Error level on every start: an unpledged firewall must not look normal
+            None => log.error(&format!(
+                "[!] Running UNPLEDGED (PLEDGE: False in {}); {} paths unveiled",
+                opts.config.display(),
+                sandbox.unveiled
+            )),
+        },
+        Err(e) => {
+            log.error(&format!("Cannot apply the sandbox: {e}; refusing to serve"));
+            return abort(6);
         }
-        return 6;
     }
 
-    // Background expiry, one thread per address family. Started only once the
-    // daemon has committed to serving: spawned before the UDP gate and the
-    // binds, these threads were already rewriting PF tables, Redis and the
-    // persist files while run() was returning a refusal, and nothing joined
-    // them on the way out. Starting them after bind_unix also keeps them clear
-    // of the umask it narrows, which is process-global.
+    // Proven before anything is accepted: no ACK for an update PF never saw
+    if let Err(e) = backends.probe_pf() {
+        log.error(&format!("{e}; refusing to serve"));
+        return abort(7);
+    }
+    log.info(&format!(
+        "[+] PF tables {} and {} reachable via CTL: {}",
+        cfg.af4_table,
+        cfg.af6_table,
+        cfg.ctl.as_str()
+    ));
+
+    // Background expiry, one thread per address family. Started last: nothing
+    // rewrites PF, Redis or the persist files until the daemon is committed to
+    // serving, and bind_unix has restored the process umask
     let mut sync_threads = Vec::new();
     for (table, file) in pfui_firewall::backends::persist_files(&cfg) {
         match pfui_firewall::sync::spawn(
@@ -205,14 +241,11 @@ fn run() -> i32 {
             Ok(handle) => sync_threads.push(handle),
             Err(e) => {
                 log.error(&format!("Scanning thread failed: {e}"));
-                term.store(true, std::sync::atomic::Ordering::Relaxed);
+                term.store(true, Ordering::Relaxed);
                 for handle in sync_threads {
                     let _ = handle.join();
                 }
-                if let Some(path) = &cfg.socket_unix {
-                    listener::remove_unix_socket(path);
-                }
-                return 4;
+                return abort(4);
             }
         }
     }

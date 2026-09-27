@@ -4,7 +4,7 @@
 #
 
 err=0
-trap 'err=1' ERR
+trap 'err=1; echo "$(basename "$0"): failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Abort immediately on a step nothing can proceed without
 die() {

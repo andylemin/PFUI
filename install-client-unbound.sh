@@ -15,9 +15,14 @@ OPENBSD_SRC_REPO="https://github.com/openbsd/src.git"
 # pinned fallback live in client-unbound/tools/unbound_release.sh, which the
 # container that tests this build uses too.
 UNBOUND_VERSION="${UNBOUND_VERSION:-latest}"
+# Unattended answers to the two prompts below; unset, the installer asks.
+# PFUI_UNBOUND_BUILD: 1 keep Unbound, update the module; 2 build Unbound.
+# PFUI_SRC_TREE: 1 keep /usr/src; 2 signed release sources; 3 -current (unsigned).
+PFUI_UNBOUND_BUILD="${PFUI_UNBOUND_BUILD:-}"
+PFUI_SRC_TREE="${PFUI_SRC_TREE:-}"
 
 err=0
-trap 'err=1' ERR
+trap 'err=1; echo "$(basename "$0"): failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Abort immediately on a step nothing can proceed without
 die() {
@@ -181,6 +186,13 @@ if [[ "$OS" = "OpenBSD" ]]; then
   if [ ! -d "${TARGET}" ]; then
     mkdir -p "${TARGET}"
   fi
+  # 'make install-all' writes Unbound's stock example at the conf path when
+  # none exists, which is not a config worth keeping
+  if [ -f "${TARGET}/pfui_unbound.conf" ]; then
+    CONF_PREDATES_BUILD=yes
+  else
+    CONF_PREDATES_BUILD=no
+  fi
 
   # Report what is installed, so the choice below is an informed one. A module
   # upgrade is the common case and needs no rebuild.
@@ -202,7 +214,15 @@ if [[ "$OS" = "OpenBSD" ]]; then
   echo "Unbound resolver (installed: ${HAVE_UNBOUND})"
   echo "  1) keep it, and update only the PFUI module and configuration"
   echo "  2) build and install Unbound (${UNBOUND_VERSION}) with the Python module"
-  read -p "Choose 1 or 2 [${BUILD_DEFAULT}]: " build_choice
+  if [ -n "${PFUI_UNBOUND_BUILD}" ]; then
+    case "${PFUI_UNBOUND_BUILD}" in
+      1|2) build_choice="${PFUI_UNBOUND_BUILD}" ;;
+      *) die "PFUI_UNBOUND_BUILD must be 1 or 2, not '${PFUI_UNBOUND_BUILD}'" ;;
+    esac
+    echo "Choose 1 or 2 [${BUILD_DEFAULT}]: ${build_choice} (from PFUI_UNBOUND_BUILD)"
+  else
+    read -p "Choose 1 or 2 [${BUILD_DEFAULT}]: " build_choice
+  fi
   [ -n "${build_choice}" ] || build_choice="${BUILD_DEFAULT}"
   if [[ "${build_choice}" = "2" ]]; then
     # Unbound is built with Makefile.bsd-wrapper taken from the system sources,
@@ -220,7 +240,15 @@ if [[ "$OS" = "OpenBSD" ]]; then
     echo "  2) replace it with the signed ${REL} release sources"
     echo "  3) replace it with -current from the git mirror (unsigned)"
     echo "Options 2 and 3 delete /usr/src/* first. /usr/ports is never touched."
-    read -p "Choose 1, 2 or 3 [1]: " src_choice
+    if [ -n "${PFUI_SRC_TREE}" ]; then
+      case "${PFUI_SRC_TREE}" in
+        1|2|3) src_choice="${PFUI_SRC_TREE}" ;;
+        *) die "PFUI_SRC_TREE must be 1, 2 or 3, not '${PFUI_SRC_TREE}'" ;;
+      esac
+      echo "Choose 1, 2 or 3 [1]: ${src_choice} (from PFUI_SRC_TREE)"
+    else
+      read -p "Choose 1, 2 or 3 [1]: " src_choice
+    fi
     case "${src_choice}" in
       2) fetch_release_src "${REL}" ;;
       3) fetch_current_src ;;
@@ -360,7 +388,7 @@ if [[ "$OS" = "OpenBSD" ]]; then
   # The resolver's own config carries an operator's whole ruleset, so an
   # existing one is never replaced; only a first install lays down the example
   echo
-  if [ -f "${TARGET}/pfui_unbound.conf" ]; then
+  if [ -f "${TARGET}/pfui_unbound.conf" ] && [ "${CONF_PREDATES_BUILD}" = yes ]; then
     cp -p "${TARGET}/pfui_unbound.conf" "${TARGET}/pfui_unbound.conf.${HOUR}"
     echo "PFUIDNS: Keeping the existing ${TARGET}/pfui_unbound.conf"
     echo "PFUIDNS: (backup at ${TARGET}/pfui_unbound.conf.${HOUR}; the example is"
@@ -378,14 +406,15 @@ fi
 echo
 echo "PFUIDNS: Updating DNS root keys and certs"
 cd /var/unbound/etc/ || exit
-unbound-anchor -a "/var/unbound/db/root.key"
+# Exit 1 means the key was written from the built-in anchor; only 2 and above fail
+unbound-anchor -a "/var/unbound/db/root.key" || [ $? -eq 1 ] || die "unbound-anchor failed"
 unbound-control-setup
 echo "PFUIDNS: Updating DNS root hints"
 ${TARGET}/update_root_hints.sh norestart
 
 echo
 echo "Checking Unbound configuration"
-/usr/local/sbin/unbound-anchor -v
+/usr/local/sbin/unbound-anchor -v || [ $? -eq 1 ] || die "unbound-anchor failed"
 /usr/local/sbin/unbound-checkconf ${TARGET}/pfui_unbound.conf
 
 # Not written automatically: the previous version expanded ${PATH} at install

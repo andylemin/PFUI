@@ -49,25 +49,20 @@ from socket import error as ERROR
 from socket import inet_ntop, ntohs, socket
 from socket import timeout as TIMEOUT
 
-# Severities, ordered. log_err() is never gated on these: an error is reported
-# whatever LOG_LEVEL says, because the setting selects how much detail
-# accompanies a fault rather than whether faults are reported at all.
+# Severities, ordered. log_err() is never gated: LOG_LEVEL selects detail, not
+# whether faults are reported
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "ERROR": 40}
 
 
 def log_at(level):
     """True when a message of this severity should be emitted.
 
-    LOG_LEVEL is a threshold, not an equality test. Testing it for equality with
-    DEBUG left every other informational line gated on LOGGING alone, so the
-    default LOG_LEVEL: ERROR still emitted per-query INFO output. An unrecognised
-    level reads as ERROR rather than opening the logs up.
+    LOG_LEVEL is a threshold; an unrecognised level reads as ERROR.
     """
     cfg = globals().get("pfui_cfg") or {}
     if not cfg.get("LOGGING", False):
         return False
-    # Normalised the same way load_config does, so a value that reached pfui_cfg
-    # without passing through it is read identically
+    # Same normalisation as load_config
     threshold = LOG_LEVELS.get(
         str(cfg.get("LOG_LEVEL", "ERROR")).strip().upper(), LOG_LEVELS["ERROR"]
     )
@@ -310,11 +305,7 @@ _breakers = {}
 def breaker_open(target):
     """True while this firewall is in its cool-off window.
 
-    A closed breaker keeps its failure count. Clearing it on every check, which is
-    what this did, reset the count once per query and so held it at 1 forever: with
-    any BREAKER_FAILURES above 1 the breaker could never trip, and every query kept
-    paying the full timeout for a firewall that was plainly down. Only an elapsed
-    cool-off clears the count, which is the one case that means "probe again".
+    Only an elapsed cool-off clears the failure count.
     """
     state = _breakers.get(target)
     if not state:
@@ -331,9 +322,7 @@ def breaker_record(target, ok):
     """Count consecutive failures and open the breaker once the threshold trips."""
     state = _breakers.setdefault(target, [0, 0])
     if ok:
-        # Only the transition is reported, not every success: opening the breaker
-        # was logged while closing it was silent, so a firewall was seen going
-        # away and never coming back. state[1] set means it had actually opened.
+        # Only the transition is logged; state[1] set means the breaker had opened
         if state[1]:
             if log_at("INFO"):
                 log_info(
@@ -394,17 +383,10 @@ def stream_transmit_close(data, family, address, target, blocking):
         breaker_record(target, ok=False)
         log_err(f"PFUIDNS: Unknown Socket Exception to {target}! {e}")
 
-    # The breaker counts a successful acknowledgement, not a successful send. A
-    # firewall that completes the handshake and then never replies looked healthy
-    # to the old accounting, so the breaker never opened and every subsequent
-    # query paid SOCKET_TIMEOUT in full, forever. A refusal counts as a failure
-    # too: the firewall is reachable but is not whitelisting anything, and PF
-    # keeps denying the traffic either way.
+    # The breaker counts acknowledgements, not sends; a refusal is a failure too
     try:
         if blocking and sent:  # Nothing to acknowledge if the send failed
-            # Read until the firewall closes rather than taking one segment: a
-            # reply split in transit compared unequal to ACKUPDATE and was
-            # charged to the breaker as a refusal
+            # Read to EOF: a reply may arrive split
             reply = b""
             while len(reply) < 36:
                 chunk = conn.recv(36 - len(reply))
@@ -420,8 +402,6 @@ def stream_transmit_close(data, family, address, target, blocking):
                     f"{refusal_detail(reply)}"
                 )
         # A non-blocking send records nothing: the firewall has not answered
-        # yet, and counting it a success cleared the failures the blocking path
-        # was accumulating, so the breaker could never open
     except TIMEOUT:
         breaker_record(target, ok=False)
         log_err(
@@ -476,11 +456,10 @@ REFUSAL_HINTS = {
 
 
 def refusal_detail(reply):
-    """A refusal with what it usually means, for the log.
+    """A refusal with what it usually means.
 
-    A decode failure is reported with what this resolver sent, which fixes the
-    direction of a COMPRESS mismatch from this end alone: the firewall is set
-    the other way.
+    A decode failure names what this end sent, so the COMPRESS mismatch
+    direction is known here.
     """
     hint = REFUSAL_HINTS.get(reply)
     if reply == b"Failed to decode":
@@ -591,11 +570,8 @@ def inplace_cache_callback(
     and the callback's return value is read as a boolean, so returning nothing
     leaves an error pending for the next query to fail on.
 
-    Sent non-blocking whatever BLOCKING is set to. A cache hit means the name was
-    resolved earlier, so an rr report already installed these addresses for
-    TTL_MULTIPLIER times the DNS TTL - longer than Unbound keeps the answer - and
-    the client can already reach them. This report extends an expiry that has not
-    arrived, so there is nothing to hold the answer for.
+    Sent non-blocking whatever BLOCKING is: the rr report that released this
+    answer already installed its addresses, so this only resets the TTL.
     """
     try:
         if log_at("DEBUG"):
@@ -673,9 +649,8 @@ def inform_super(id, qstate, superqstate, qdata):
     return True
 
 
-# pythonmod injects these into this module's globals. strmodulevent() is not
-# used to name an event: its binding rejects anything outside 'enum module_ev'
-# with an OverflowError, and a log line must not be able to fail.
+# pythonmod injects these. strmodulevent() is not used: it raises OverflowError
+# outside 'enum module_ev', and a log line must not fail
 EVENT_NAMES = (
     "MODULE_EVENT_NEW",
     "MODULE_EVENT_PASS",
@@ -786,10 +761,7 @@ def _operate(id, event, qstate, qdata):
     return True
 
 
-# Every key this module reads, with the value assumed when the yml omits it.
-# Partial defaults meant a config predating an option raised KeyError from inside
-# a query - after Unbound had already loaded the module and before ext_state was
-# set - so the resolver failed per lookup rather than at start.
+# Every key this module reads, with the value assumed when the yml omits it
 CONFIG_DEFAULTS = {
     "LOGGING": True,
     "LOG_LEVEL": "ERROR",
@@ -838,9 +810,7 @@ def load_config(location=CONFIG_LOCATION):
         except (TypeError, ValueError):
             raise ValueError(f"{key} must be a number, not {cfg[key]!r}") from None
 
-    # Normalised rather than rejected: an unrecognised level is not worth
-    # refusing to resolve over, and log_at() reads it as ERROR either way. Said
-    # out loud because the symptom of a typo is silently quieter logs.
+    # Normalised, not rejected; an unrecognised level is reported and read as ERROR
     cfg["LOG_LEVEL"] = str(cfg["LOG_LEVEL"]).strip().upper()
     if cfg["LOG_LEVEL"] not in LOG_LEVELS:
         log_err(
@@ -849,9 +819,7 @@ def load_config(location=CONFIG_LOCATION):
         )
         cfg["LOG_LEVEL"] = "ERROR"
 
-    # Checked here rather than left to the first query: encode_payload would
-    # raise per answer, and a resolver that answers while telling no firewall
-    # anything leaves every client denied by PF with nothing in the log to say so
+    # At load, not per answer: a resolver that cannot encode must fail to start
     if cfg["COMPRESS"] and not HAVE_LZ4:
         raise ValueError(
             "COMPRESS is True but the lz4 package is not installed; install "

@@ -165,7 +165,7 @@ table. It is not on the per-query hot path, so the subprocess cost is accepted.
 Replacing it needs a `DIOCRGETADDRS` implementation, which belongs with the
 other ioctl structs; deferred, not forgotten. The Rust daemon closes this
 deferral: under `CTL: IOCTL` it reads the table with `DIOCRGETADDRS`, and the
-subprocess survives only as the `CTL: PFCTL` path and the ioctl-error fallback.
+subprocess survives only as the `CTL: PFCTL` path.
 
 ## No live configuration reload
 
@@ -249,9 +249,13 @@ binary path. C's only real edge was zero-package builds from base clang;
 Rust buys memory safety on the one component that parses unauthenticated
 network input and writes PF tables, serde for the config and payloads, a
 test framework that carried the whole Python suite across, and cheap
-`unveil(2)`/`pledge(2)`. `server-c/` stays as the framing cross-check; its
-retirement is a separate decision, taken only after the Rust daemon passes
-the same vectors in production use.
+`unveil(2)`/`pledge(2)`.
+
+There is no C server. `server-c/` held a framing implementation and nothing
+else, kept as a cross-check against the shared vectors until the Rust daemon
+had proven itself in production. It has, so the scaffolding is removed rather
+than maintained: `protocol/python` and `server-rust` both run
+`vectors/framing.tsv`, which is the cross-check the C code existed for.
 
 The daemon is plain threads, no async runtime: the Python design (an accept
 thread per listener plus a bounded worker pool shedding beyond twice
@@ -314,3 +318,105 @@ Whether the `pf` promise covers the table-address ioctls decides the final
 shape: covered means a pledged daemon, not covered means unveil-only with a
 privsep follow-up (a pledged network parent feeding a small PF-writer child
 over a socketpair).
+
+The unpledged baseline was reached in production in September 2026, and
+pledge is now on; the arrangement is under "The sandbox follows CTL" below.
+The pass that proves it is no longer manual: the OpenBSD job runs the pledged
+daemon under every configuration on every relevant change.
+
+## CTL: IOCTL is the ioctl and nothing else
+
+The Python daemon falls back to pfctl on any ioctl error, and the Rust daemon
+carried that over for parity. The Rust daemon drops it. A fallback that
+succeeds leaves nothing to act on: every message paid a fork and exec of
+pfctl, milliseconds against the tens of microseconds an ioctl costs, and the
+only trace was an error line per message ending "pfctl served the call", which
+reads as reassurance. A firewall whose ioctl path broke would have run
+indefinitely at a fraction of its speed with nothing wrong in any dashboard. It
+also papered over the one realistic ioctl failure, `ESRCH` for a table absent
+from the ruleset: `pfctl -T add` creates a table no rule references, so
+addresses were being whitelisted into nothing.
+
+The ioctl either works or it does not, and the operator hears about it once,
+loudly, with the remedy attached. A startup probe reads both tables through the
+configured control path before anything is served and refuses to start
+otherwise (exit code 7), naming what the errno means on a firewall: `EACCES`
+is `/dev/pf` not being group `_pfui_firewall` mode 660, `ESRCH` is the table
+missing from the loaded ruleset, `ENOENT` is no `/dev/pf` at all. Every such
+message ends with the two remedies, fix that or set `CTL: PFCTL`. The probe
+runs as the daemon user after rc.d has dropped privileges, which is the uid
+whose permissions matter, and after the sandbox is applied, so it is also the
+first exercise of the boundary. Under `CTL: PFCTL` the probe is a `pfctl -T
+show` per table, which proves the exec path the same way.
+
+A runtime ioctl failure is logged with the same guidance and nothing else
+happens: the acknowledgement still goes out, as it always has and as the
+Python daemon does, and PF keeps denying the traffic, so the client side stays
+fail-closed. The Python daemon is unchanged.
+
+## The sandbox follows CTL, and the table ioctls run in a child
+
+`unveil(2)` and `pledge(2)` are applied together, after the binds and before
+the PF probe. Both are built as data (`platform::unveil_plan`,
+`platform::pledge_promises`) and applied separately, so their contents are
+tested on every platform even though the calls exist only on OpenBSD. The list
+is the security boundary, and it was incomplete with nowhere to notice until
+the OpenBSD job ran: `/sbin/pfctl` was unveiled but `/dev/null` was not, and
+the spawn opens `/dev/null` for the child's stdin before it execs, so the exec
+failed with `ENOENT`. `platform.rs` compiled only on the target.
+
+The `pf` promise does not cover what PFUI does. `kern_pledge.c` permits
+`DIOCADDRULE`, `DIOCGETSTATUS`, `DIOCNATLOOK`, `DIOCRADDTABLES`,
+`DIOCRCLRADDRS`, `DIOCRCLRTABLES`, `DIOCRCLRTSTATS`, `DIOCRGETTSTATS`,
+`DIOCRSETADDRS`, `DIOCXBEGIN`, `DIOCXCOMMIT` and `DIOCKILLSRCNODES` under it,
+and no other ioctl on `/dev/pf` under any promise. `DIOCRADDADDRS`,
+`DIOCRDELADDRS` and `DIOCRGETADDRS` are not on the list, so a pledged process
+cannot add, remove or read table addresses at all; a daemon that tried was
+killed at its first probe. The kill is also silent for a daemon: `pledge_fail`
+reports with `uprintf`, which writes to the controlling terminal, so nothing
+reaches dmesg or syslog. That is why the probe runs after the pledge and why
+the OpenBSD job exists.
+
+So under `CTL: IOCTL` the ioctls run in a PF child (`pf::privsep`). The parent
+forks it before any thread exists and before it pledges; the child opens
+`/dev/pf`, unveils the filesystem away, and does nothing but read a fixed-shape
+request over a socketpair, run one ioctl, and write the reply. It cannot
+pledge, since every promise set forbids its ioctls, but it parses nothing that
+did not come from the parent. The parent never holds `/dev/pf`: its plan is
+the config, the persist and socket directories, and its pledge is `stdio
+rpath wpath cpath flock fattr inet` plus `unix` when a local socket is bound.
+It neither forks nor execs after the child exists. `CTL: PFCTL` runs no child:
+it adds `/dev/pf`, `/sbin/pfctl` and `/dev/null` to the plan and `proc exec`
+to the pledge, because the pfctl child inherits the view, opens the device
+itself, and is given `/dev/null` as stdin. `/sbin/pfctl` is statically linked,
+so no loader or library is unveiled. `dns` is never pledged: `REDIS_HOST` is resolved
+before lockdown and the client holds the address. `execpromises` is NULL.
+
+`PLEDGE: False` disables the parent's call. It is an emergency switch, not a
+mode: a violation on a promise this design missed kills the control plane, and
+an operator must be able to restore whitelisting without a rebuild while the
+gap is fixed. A daemon started that way logs at error level on every start that
+it is running unpledged, so a firewall left in that state does not look normal.
+
+## OpenBSD runs in CI
+
+`.github/workflows/openbsd.yml` runs `tests/openbsd/run.sh` inside a real
+OpenBSD VM (`vmactions/openbsd-vm`) on every change to the daemon, the
+resolver, the protocol, the installers or the job itself, and on demand. It is the only place the OpenBSD-only code compiles, so it is the only
+thing that can prove the ioctl, unveil and pledge paths; the unveil gap above
+survived precisely because nothing compiled `platform.rs`.
+
+One VM, one build, many passes: building rust and unbound once and cycling
+configurations keeps the job near half an hour instead of multiplying it by
+the matrix. Both installers run for real, unattended, with the signed release
+sources, which is the path an operator follows; `-current` is reachable only
+from `workflow_dispatch`, because upstream churn must not block a pull
+request. The pf.conf it
+loads declares only the two tables and passes everything, since the shipped
+default-deny example would sever the runner's own session. Lookups are made
+with `dig @127.0.0.1` rather than ping: resolvd rewrites `resolv.conf` and
+ICMP through qemu's NAT is unreliable, so ping is a poor trigger even though
+it would work as one. Latency figures are printed, and the acknowledgement is
+asserted to precede the total, but no absolute threshold is asserted: the VM
+is qemu on a shared runner, and any threshold would flake. Production numbers
+come from the production firewall.

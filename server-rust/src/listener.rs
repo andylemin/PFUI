@@ -349,11 +349,8 @@ impl WorkerPool {
                         guard.recv()
                     };
                     match job {
-                        // Contained per job: a panic here used to unwind the
-                        // whole worker, so a repeatable fault retired the pool
-                        // one thread at a time until every message was shed and
-                        // nothing was whitelisted at all. The lock is released
-                        // above, so the channel cannot be poisoned by this.
+                        // Caught per job so one fault cannot retire the pool;
+                        // the receive lock is already released
                         Ok(job) => {
                             let run = std::panic::AssertUnwindSafe(|| receiver::handle(job, &ctx));
                             if let Err(panic) = std::panic::catch_unwind(run) {
@@ -418,8 +415,6 @@ impl Submitter {
         match self.tx.try_send(job) {
             Ok(()) => Submitted::Accepted,
             Err(TrySendError::Full(_)) => Submitted::Shed,
-            // Reported as success before, so a job dropped after shutdown looked
-            // handled and the loop kept accepting work nothing would ever run
             Err(TrySendError::Disconnected(_)) => Submitted::PoolStopped,
         }
     }
@@ -457,10 +452,17 @@ impl StreamListener {
                 Ok((Box::new(conn), peer.to_string()))
             }
             StreamListener::Unix(l, path) => {
-                let (conn, _) = l.accept()?;
-                conn.set_nonblocking(false)?;
-                conn.set_read_timeout(Some(timeout))?;
-                conn.set_write_timeout(Some(timeout))?;
+                // Named per step: a peer that is already gone fails setsockopt on
+                // some kernels, and the connection is dropped with its data
+                let step =
+                    |what: &str, e: io::Error| io::Error::new(e.kind(), format!("{what}: {e}"));
+                let (conn, _) = l.accept().map_err(|e| step("accept", e))?;
+                conn.set_nonblocking(false)
+                    .map_err(|e| step("set_nonblocking", e))?;
+                conn.set_read_timeout(Some(timeout))
+                    .map_err(|e| step("set_read_timeout", e))?;
+                conn.set_write_timeout(Some(timeout))
+                    .map_err(|e| step("set_write_timeout", e))?;
                 // accept() reports no peer on AF_UNIX, so the socket path
                 // names the sender in the log
                 Ok((Box::new(conn), path.display().to_string()))

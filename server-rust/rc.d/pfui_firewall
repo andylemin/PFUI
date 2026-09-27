@@ -12,6 +12,8 @@ daemon_user="_pfui_firewall"
 . /etc/rc.d/rc.subr
 
 rc_bg=YES
+# Matches the daemon and its PF child; the child ignores the TERM this sends
+# and exits when the parent closes their socket
 pexp="${daemon}.*"
 
 rc_pre() {

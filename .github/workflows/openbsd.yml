@@ -1,0 +1,66 @@
+name: openbsd
+
+# Runs tests/openbsd/run.sh in a real OpenBSD VM: both installers, then the
+# installed resolver against the installed daemon under unveil and pledge.
+# The daemon's ioctl, unveil and pledge code compiles on no other platform.
+
+on:
+  pull_request:
+    paths:
+      - 'server-rust/**'
+      - 'client-unbound/**'
+      - 'protocol/**'
+      - 'install-*.sh'
+      - 'tests/openbsd/**'
+      - '.github/workflows/openbsd.yml'
+  push:
+    paths:
+      - 'server-rust/**'
+      - 'client-unbound/**'
+      - 'protocol/**'
+      - 'install-*.sh'
+      - 'tests/openbsd/**'
+      - '.github/workflows/openbsd.yml'
+  workflow_dispatch:
+    inputs:
+      src_tree:
+        description: >-
+          OpenBSD sources for the Unbound build: 2 = the signed release set
+          (what the installer does by default), 3 = -current from the git
+          mirror (unsigned; upstream churn, so never on a pull request)
+        type: choice
+        options: ['2', '3']
+        default: '2'
+      unbound_version:
+        description: 'Unbound to build: latest, master, or a release-* tag'
+        default: 'latest'
+
+jobs:
+  end-to-end:
+    name: OpenBSD ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        # The release the production firewall runs
+        release: ['7.9']
+    env:
+      PFUI_SRC_TREE: ${{ github.event.inputs.src_tree || '2' }}
+      UNBOUND_VERSION: ${{ github.event.inputs.unbound_version || 'latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PFUI, then run the resolver against the daemon
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          envs: 'PFUI_SRC_TREE UNBOUND_VERSION'
+          sync: rsync
+          copyback: false
+          # Cached as a VM image; the package set is fixed per release. bash
+          # is not in base.
+          cache-after-prepare: true
+          prepare: |
+            pkg_add -I bash rust redis swig git curl py3-lz4 py3-yaml
+          run: |
+            sh tests/openbsd/run.sh

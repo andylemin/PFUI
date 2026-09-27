@@ -50,6 +50,8 @@ pub struct Config {
     pub ttl_multiplier: u32,
     pub ctl: Ctl,
     pub devpf: PathBuf,
+    /// pledge(2) after startup; False is logged at error level on every start.
+    pub pledge: bool,
     pub af4_table: String,
     pub af4_file: PathBuf,
     pub af6_table: String,
@@ -173,9 +175,7 @@ impl Doc {
             .and_then(as_int)
             .unwrap_or(default)
     }
-    /// An integer that has to fit where it is going. Casting instead truncated
-    /// silently: SOCKET_PORT: 65536 bound port 0, and REDIS_DB: 256 selected
-    /// database 0, both without a word in the log.
+    /// An integer that must fit its destination: refused, never truncated.
     fn ranged(
         &self,
         key: &'static str,
@@ -260,8 +260,7 @@ pub fn load_config_str(text: &str) -> Result<Config, ConfigError> {
         return Err(ConfigError::NoListener);
     }
 
-    // Any LOG_LEVEL other than DEBUG or INFO is ERROR. Trimmed and folded to
-    // upper case first: matching the raw text made 'debug' silently mean ERROR.
+    // Any LOG_LEVEL other than DEBUG or INFO is ERROR
     let log_level = match doc
         .text("LOG_LEVEL", "DEBUG")
         .trim()
@@ -299,6 +298,7 @@ pub fn load_config_str(text: &str) -> Result<Config, ConfigError> {
         ttl_multiplier: doc.ranged("TTL_MULTIPLIER", 2, 0, u32::MAX as i64)? as u32,
         ctl,
         devpf: PathBuf::from(doc.text("DEVPF", "/dev/pf")),
+        pledge: doc.boolean("PLEDGE", true),
         af4_table: doc.required("AF4_TABLE")?,
         af4_file: PathBuf::from(doc.required("AF4_FILE")?),
         af6_table: doc.required("AF6_TABLE")?,
@@ -330,9 +330,7 @@ AF6_FILE: /var/db/pfui/ipv6_domains
 
     #[test]
     fn an_integer_that_does_not_fit_is_refused_not_truncated() {
-        // Casting silently: 65536 bound port 0, and REDIS_DB: 256 selected
-        // database 0, so the daemon served the wrong port or wrote the wrong
-        // Redis database with nothing in the log
+        // Truncation would bind port 0 or select database 0
         let listener = "SOCKET_LISTEN: 10.10.1.254\n";
         for (key, value) in [
             ("SOCKET_PORT", "65536"),
@@ -360,9 +358,15 @@ AF6_FILE: /var/db/pfui/ipv6_domains
     }
 
     #[test]
+    fn pledge_is_on_unless_switched_off() {
+        let listener = "SOCKET_LISTEN: 10.10.1.254\n";
+        assert!(with(listener).unwrap().pledge);
+        assert!(!with(&format!("{listener}PLEDGE: False\n")).unwrap().pledge);
+    }
+
+    #[test]
     fn log_level_is_read_case_insensitively() {
-        // Matching the raw text made a lower-case level mean ERROR, so a
-        // resolver set to debug logged nothing but faults
+        // Lower case must not read as ERROR
         let level = |text: &str| {
             let yaml = format!("SOCKET_LISTEN: 10.10.1.254\nLOG_LEVEL: '{text}'\n");
             with(&yaml).unwrap().log_level

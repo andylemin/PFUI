@@ -128,8 +128,7 @@ def load_config(location: str = CONFIG_LOCATION) -> dict:
             + ", ".join(missing)
         )
 
-    # Checked at load rather than per message: without the codec every message
-    # would be refused as undecodable, which reads as a client fault
+    # At load, not per message
     if cfg["COMPRESS"] and not HAVE_LZ4:
         raise ValueError(
             "COMPRESS is True but the lz4 package is not installed; install "
@@ -560,8 +559,7 @@ class PFUI_Firewall(Service):
         self.logger.addHandler(
             SysLogHandler(address=find_syslog(), facility=SysLogHandler.LOG_DAEMON)
         )
-        # Normalised before it is read anywhere: matching the raw text made
-        # 'debug' silently select ERROR, self.stats included
+        # Normalised before self.stats reads it
         self.cfg["LOG_LEVEL"] = str(self.cfg["LOG_LEVEL"]).strip().upper()
 
         # Both the timing probes and the summary below use this one flag
@@ -1065,7 +1063,7 @@ class PFUI_Firewall(Service):
                 return
             except BadLength as e:
                 # Reported separately from a truncated payload, as PROTOCOL.md
-                # documents and server-c already distinguishes: a bad prefix is
+                # documents and server-rust already distinguishes: a bad prefix is
                 # a different diagnosis from a sender that under-delivered
                 self.logger.error(
                     f"PFUIFW: Bad frame length from {peer}, disconnecting. {e}"
