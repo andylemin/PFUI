@@ -52,6 +52,40 @@ start_after_upgrade() {
   echo "        tail /var/log/daemon | grep pfui_firewall" >&2
 }
 
+# Ask the running Redis what it is bound to. Retried, because rcctl returns once
+# the process exists, which precedes it accepting connections. Redis holds the
+# whitelist the sync loop pushes into PF, so anything that reaches it can
+# authorise egress.
+report_redis_bind() {
+  local bind="" token tries=0
+  while [ "${tries}" -lt 10 ]; do
+    bind=$(redis-cli config get bind 2>/dev/null | tail -1)
+    [ -n "${bind}" ] && break
+    tries=$((tries + 1))
+    sleep 1
+  done
+  # Unverifiable is not the same as wrong, so this warns rather than failing
+  if [ -z "${bind}" ]; then
+    echo "PFUIFW: WARNING Redis did not answer, so its bind address was not verified."
+    echo "        Check it listens on loopback only: redis-cli config get bind"
+    return 0
+  fi
+  echo "PFUIFW: Redis is bound to: ${bind}"
+  # Redis writes this as a list, and '-' marks an address it may skip
+  for token in ${bind}; do
+    case "${token#-}" in
+      127.*|::1|localhost) ;;
+      *)
+        err=1
+        echo "PFUIFW: WARNING Redis is bound to '${bind}', which is not loopback only." >&2
+        echo "        Anything that reaches it can authorise egress through PF." >&2
+        echo "        Set 'bind 127.0.0.1' in ${REDIS_CONF} and restart redis." >&2
+        return 0
+        ;;
+    esac
+  done
+}
+
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 HOUR=$(date +%d-%b-%H_%M)
 
@@ -89,6 +123,7 @@ if [[ "$OS" = "OpenBSD" ]]; then
   # Redis holds the whitelist that the sync loop pushes into the PF tables, so
   # anything able to write those keys can authorise egress. Keep it loopback-only.
   REDIS_CONF=/etc/redis/redis.conf
+  REDIS_CONF_CHANGED=no
   if [ -f "${REDIS_CONF}" ]; then
     cp -p "${REDIS_CONF}" "${REDIS_CONF}.${HOUR}"
     if grep -Eq '^[[:space:]]*bind[[:space:]]' "${REDIS_CONF}"; then
@@ -98,15 +133,25 @@ if [[ "$OS" = "OpenBSD" ]]; then
     fi
     grep -Eq '^[[:space:]]*protected-mode' "${REDIS_CONF}" \
       || echo "protected-mode yes" >> "${REDIS_CONF}"
+    if cmp -s "${REDIS_CONF}" "${REDIS_CONF}.${HOUR}"; then
+      rm -f "${REDIS_CONF}.${HOUR}"
+    else
+      REDIS_CONF_CHANGED=yes
+      echo "PFUIFW: ${REDIS_CONF} updated (backup at ${REDIS_CONF}.${HOUR})"
+    fi
   else
     echo "PFUIFW: WARNING ${REDIS_CONF} not found; verify Redis binds 127.0.0.1 only"
   fi
+  # Only sets status, so a configured rtable, user or flags are untouched
   rcctl enable redis
-  rcctl restart redis
-  # Verify rather than assume
-  if command -v redis-cli >/dev/null 2>&1; then
-    echo "PFUIFW: Redis bind is now: $(redis-cli config get bind 2>/dev/null | tail -1)"
+  # Restarting drops every connection the daemon holds, so it happens only when
+  # this changed the configuration or Redis is not running
+  if [ "${REDIS_CONF_CHANGED}" = yes ] || ! rcctl check redis >/dev/null 2>&1; then
+    rcctl restart redis
+  else
+    echo "PFUIFW: Redis already running and its configuration unchanged; left alone"
   fi
+  report_redis_bind
 
   echo "PFUIFW: Creating daemon user '_pfui_firewall'"
 
